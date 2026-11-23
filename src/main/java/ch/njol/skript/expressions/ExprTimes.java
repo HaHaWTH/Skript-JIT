@@ -16,6 +16,7 @@ import ch.njol.skript.log.SkriptLogger;
 import ch.njol.util.Kleenean;
 import com.google.common.collect.Iterators;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Iterator;
@@ -89,8 +90,19 @@ public class ExprTimes extends SimpleExpression<Long> {
 		Number end = this.end.getSingle(e);
 		if (end == null)
 			return null;
+		return LongStream.range(1, exclusiveLimit(end)).iterator();
+	}
+
+	/** @return The exclusive upper bound of this times expression for a compiled loop. */
+	@ApiStatus.Internal
+	public long skatalystExclusiveLimit(Event event) {
+		Number value = end.getSingle(event);
+		return value == null ? 1 : exclusiveLimit(value);
+	}
+
+	private static long exclusiveLimit(Number end) {
 		long fixed = (long) (end.doubleValue() + Skript.EPSILON);
-		return LongStream.range(1, fixed + 1).iterator();
+		return fixed + 1;
 	}
 
 	@Override

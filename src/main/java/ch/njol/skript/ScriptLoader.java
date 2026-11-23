@@ -647,7 +647,7 @@ public class ScriptLoader {
 					// trigger events
 					scripts.forEach(loadingInfo -> {
 						Script script = loadingInfo.script;
-
+						script.skatalystScope().activate();
 						parser.setActive(script);
 						parser.setNode(script.getConfig().getMainNode());
 
@@ -915,6 +915,7 @@ public class ScriptLoader {
 
 		// trigger unload event before unloading scripts
 		for (Script script : scripts) {
+			script.skatalystScope().close();
 			eventRegistry().events(ScriptUnloadEvent.class)
 				.forEach(event -> event.onUnload(parser, script));
 			script.eventRegistry().events(ScriptUnloadEvent.class)
@@ -1063,7 +1064,7 @@ public class ScriptLoader {
 			TriggerItem item = null;
 			if (subNode instanceof SimpleNode) {
 				long start = System.currentTimeMillis();
-				item = Statement.parse(expr, items, "Can't understand this condition/effect: " + expr);
+				item = observeSyntax(parser, () -> Statement.parse(expr, items, "Can't understand this condition/effect: " + expr));
 				if (item == null)
 					continue;
 				long requiredTime = SkriptConfig.longParseTimeWarningThreshold.value().getAs(Timespan.TimePeriod.MILLISECOND);
@@ -1094,7 +1095,7 @@ public class ScriptLoader {
 					// thus, hints may be added, but we do not want to save them as the line is invalid
 					parser.getHintManager().enterScope(false);
 
-					item = Section.parse(expr, "Can't understand this section: " + expr, subSection, items);
+					item = observeSyntax(parser, () -> Section.parse(expr, "Can't understand this section: " + expr, subSection, items));
 					if (item != null)
 						break find_section;
 
@@ -1102,7 +1103,8 @@ public class ScriptLoader {
 					RetainingLogHandler backup = handler.backup();
 					handler.clear();
 
-					item = Statement.parse(expr, "Can't understand this condition/effect: " + expr, subSection, items);
+					item = observeSyntax(parser,
+						() -> Statement.parse(expr, "Can't understand this condition/effect: " + expr, subSection, items));
 
 					if (item != null)
 						break find_section;
@@ -1194,6 +1196,18 @@ public class ScriptLoader {
 			parser.setIndentation(parser.getIndentation().substring(0, parser.getIndentation().length() - 4));
 
 		return items;
+	}
+
+	private static <T extends TriggerItem> @Nullable T observeSyntax(ParserInstance parser, Supplier<T> parse) {
+		boolean outer = parser.skatalystSwapExternalSyntax(false);
+		T item = null;
+		try {
+			item = parse.get();
+			return item;
+		} finally {
+			if (parser.skatalystSwapExternalSyntax(outer) && item != null)
+				item.skatalystMarkExternalSyntax();
+		}
 	}
 
 	/**

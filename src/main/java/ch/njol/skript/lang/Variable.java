@@ -27,6 +27,7 @@ import org.apache.commons.lang3.ArrayUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.arithmetic.Arithmetics;
@@ -776,6 +777,16 @@ public class Variable<T> implements Expression<T>, KeyReceiverExpression<T>, Key
 
 	public VariableString getName() {
 		return name;
+	}
+
+	/** @return Whether this variable expression reads a value of the given class without a converter. */
+	@ApiStatus.Internal
+	public boolean skatalystAcceptsRaw(Class<?> valueType) {
+		for (Class<?> type : types) {
+			if (type.isAssignableFrom(valueType))
+				return true;
+		}
+		return false;
 	}
 
 	@Override

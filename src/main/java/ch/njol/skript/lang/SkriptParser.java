@@ -199,12 +199,15 @@ public final class SkriptParser {
 	}
 
 	private <T extends SyntaxElement> @Nullable T parse(Iterator<? extends SyntaxInfo<? extends T>> source) {
-		ParsingStack parsingStack = getParser().getParsingStack();
+		ParserInstance parser = getParser();
+		ParsingStack parsingStack = parser.getParsingStack();
+		boolean externalSyntax = parser.skatalystExternalSyntax();
 		try (ParseLogHandler log = SkriptLogger.startParseLogHandler()) {
 			while (source.hasNext()) {
 				SyntaxInfo<? extends T> info = source.next();
 				int matchedPattern = -1; // will increment at the start of each iteration
 				patternsLoop: for (String pattern : info.patterns()) {
+					parser.skatalystSwapExternalSyntax(externalSyntax);
 					matchedPattern++;
 					log.clear();
 					ParseResult parseResult;
@@ -244,6 +247,7 @@ public final class SkriptParser {
 								for (DefaultExpression<?> expr : exprs) {
 									if (expr.init()) {
 										matchedExpr = expr;
+										parser.skatalystObserveSyntax(expr.getClass());
 										break;
 									}
 								}
@@ -275,12 +279,14 @@ public final class SkriptParser {
 							if (element == null)
 								continue;
 						}
+						parser.skatalystObserveSyntax(info.type());
 						return element;
 					}
 				}
 			}
 
 			// No successful syntax elements parsed, print errors and return
+			parser.skatalystSwapExternalSyntax(externalSyntax);
 			log.printError();
 			return null;
 		}

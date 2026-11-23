@@ -16,6 +16,7 @@ import ch.njol.skript.sections.SecLoop;
 import ch.njol.skript.util.Utils;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 import java.lang.reflect.Array;
@@ -143,6 +144,12 @@ public class ExprLoopValue extends SimpleExpression<Object> {
 		}
 		this.loop = loop;
 		return true;
+	}
+
+	/** @return Whether this expression reads the specified loop's ordinary current value. */
+	@ApiStatus.Internal
+	public boolean skatalystIsCurrentValueOf(SecLoop loop) {
+		return this.loop == loop && selectedState == LoopState.CURRENT && !isKeyedLoop;
 	}
 	
 	@Override

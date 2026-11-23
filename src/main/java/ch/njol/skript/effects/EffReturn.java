@@ -14,6 +14,7 @@ import ch.njol.skript.log.SkriptLogger;
 import ch.njol.skript.registrations.Classes;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnknownNullability;
 
@@ -98,6 +99,11 @@ public class EffReturn extends Effect {
 
 	@Override
 	protected @Nullable TriggerItem walk(Event event) {
+		return skatalystReturn(event);
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable TriggerItem skatalystReturn(Event event) {
 		debug(event, false);
 		//noinspection rawtypes,unchecked
 		((ReturnHandler) handler).returnValues(event, value);

@@ -21,6 +21,7 @@ import ch.njol.util.coll.CollectionUtils;
 import ch.njol.util.coll.iterator.SingleItemIterator;
 import com.google.common.collect.Lists;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.bukkit.text.elements.expressions.ExprColored;
@@ -465,6 +466,12 @@ public class VariableString implements Expression<String> {
 
 	public StringMode getMode() {
 		return mode;
+	}
+
+	/** @return This string's literal pieces and interpolation expressions in evaluation order. */
+	@ApiStatus.Internal
+	public List<Object> skatalystParts() {
+		return isSimple ? List.of(simple) : List.of(strings);
 	}
 
 	public VariableString setMode(StringMode mode) {

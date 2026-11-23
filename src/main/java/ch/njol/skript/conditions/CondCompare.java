@@ -11,6 +11,8 @@ import ch.njol.skript.lang.Expression;
 import ch.njol.skript.lang.ExpressionList;
 import ch.njol.skript.lang.Literal;
 import ch.njol.skript.lang.SimplifiedCondition;
+import ch.njol.skript.lang.TriggerItem;
+import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
 import ch.njol.skript.lang.UnparsedLiteral;
 import ch.njol.skript.lang.VerboseAssert;
@@ -23,6 +25,7 @@ import ch.njol.skript.util.Patterns;
 import ch.njol.skript.util.Utils;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.comparator.Comparator;
 import org.skriptlang.skript.lang.comparator.ComparatorInfo;
@@ -328,7 +331,7 @@ public class CondCompare extends Condition implements VerboseAssert {
 		return first.check(event, (Predicate<Object>) o1 ->
 			second.check(event, (Predicate<Object>) o2 -> {
 				if (third == null)
-					return relation.isImpliedBy(comparator != null ? comparator.compare(o1, o2) : Comparators.compare(o1, o2));
+					return skatalystTestValues(o1, o2);
 				return third.check(event, (Predicate<Object>) o3 -> {
 					boolean isBetween;
 					if (comparator != null) {
@@ -360,6 +363,31 @@ public class CondCompare extends Condition implements VerboseAssert {
 				});
 			}
 		), isNegated());
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable BinaryComparison skatalystComparison() {
+		return third == null ? new BinaryComparison(first, second, relation, comparator) : null;
+	}
+
+	@ApiStatus.Internal
+	public record BinaryComparison(Expression<?> first, Expression<?> second, Relation relation,
+							  @Nullable Comparator<?, ?> comparator) {}
+
+	/** Tests the already evaluated pair; the caller applies the condition's negation. */
+	@ApiStatus.Internal
+	@SuppressWarnings("unchecked")
+	public final boolean skatalystTestValues(Object first, Object second) {
+		return relation.isImpliedBy(comparator != null ? comparator.compare(first, second) : Comparators.compare(first, second));
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable TriggerItem skatalystContinuation(Event event, boolean passed) {
+		debug(event, passed);
+		if (passed)
+			return getActualNext();
+		TriggerSection parent = getParent();
+		return parent == null ? null : parent.getNext();
 	}
 
 	public String getExpectedMessage(Event event) {

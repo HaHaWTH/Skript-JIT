@@ -2,6 +2,7 @@ package ch.njol.skript.sections;
 
 import ch.njol.skript.ScriptLoader;
 import ch.njol.skript.Skript;
+import ch.njol.skript.conditions.CondCompare;
 import ch.njol.skript.config.Node;
 import ch.njol.skript.config.SectionNode;
 import ch.njol.skript.doc.Description;
@@ -18,6 +19,7 @@ import ch.njol.skript.util.Patterns;
 import ch.njol.util.Kleenean;
 import com.google.common.collect.Iterables;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnknownNullability;
 import org.skriptlang.skript.bukkit.text.TextComponentParser;
@@ -77,6 +79,7 @@ public class SecConditional extends Section {
 
 	private ConditionalType type;
 	private @UnknownNullability Conditional<Event> conditional;
+	private @Nullable CondCompare scalarComparison;
 	private boolean ifAny;
 	private boolean parseIf;
 	private boolean parseIfPassed;
@@ -224,6 +227,8 @@ public class SecConditional extends Section {
 			}
 
 			conditional = Conditional.compound(ifAny ? Operator.OR : Operator.AND, conditionals);
+			if (!parseIf && conditionals.size() == 1 && conditionals.getFirst().getClass() == CondCompare.class)
+				scalarComparison = (CondCompare) conditionals.getFirst();
 		}
 
 		// ([else] parse if) If condition is valid and false, do not parse the section
@@ -297,18 +302,27 @@ public class SecConditional extends Section {
 
 	@Override
 	protected @Nullable TriggerItem walk(Event event) {
-		if (type == ConditionalType.THEN || (parseIf && !parseIfPassed)) {
-			return getActualNext();
-		} else if (parseIf || checkConditions(event)) {
-			// if this is a multiline if, we need to run the "then" section instead
-			SecConditional sectionToRun = multiline ? (SecConditional) getActualNext() : this;
-			TriggerItem skippedNext = getSkippedNext();
-			if (sectionToRun.last != null)
-				sectionToRun.last.setNext(skippedNext);
-			return sectionToRun.first != null ? sectionToRun.first : skippedNext;
-		} else {
-			return getActualNext();
-		}
+		return skatalystCondition(event) ? skatalystEnterBranch() : getActualNext();
+	}
+
+	@ApiStatus.Internal
+	public final boolean skatalystCondition(Event event) {
+		return type != ConditionalType.THEN && (parseIf ? parseIfPassed : checkConditions(event));
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable CondCompare skatalystComparison() {
+		return scalarComparison;
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable TriggerItem skatalystEnterBranch() {
+		// A multiline conditional runs its accompanying "then" section instead.
+		SecConditional sectionToRun = multiline ? (SecConditional) getActualNext() : this;
+		TriggerItem skippedNext = getSkippedNext();
+		if (sectionToRun.last != null)
+			sectionToRun.last.setNext(skippedNext);
+		return sectionToRun.first != null ? sectionToRun.first : skippedNext;
 	}
 
 	@Override

@@ -21,6 +21,7 @@ import ch.njol.skript.util.Patterns;
 import ch.njol.skript.variables.HintManager;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.script.ScriptWarning;
 
@@ -326,6 +327,15 @@ public class EffChange extends Effect {
 
 		changed.change(event, delta, mode);
 	}
+
+	/** @return The parsed change target, source and mode for bytecode lowering. */
+	@ApiStatus.Internal
+	public SkatalystChange skatalystChange() {
+		return new SkatalystChange(changed, changer, mode);
+	}
+
+	@ApiStatus.Internal
+	public record SkatalystChange(Expression<?> target, @Nullable Expression<?> source, ChangeMode mode) { }
 
 	@Override
 	public String toString(@Nullable Event event, boolean debug) {

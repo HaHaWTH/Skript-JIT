@@ -22,6 +22,7 @@ import ch.njol.skript.util.Version;
 import ch.njol.skript.variables.FlatFileStorage;
 import ch.njol.skript.variables.Variables;
 import co.aikar.timings.Timings;
+import io.gunmu.skatalyst.Skatalyst;
 import org.bukkit.event.EventPriority;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
@@ -207,6 +208,7 @@ public class SkriptConfig {
 	public static final Option<Boolean> disableColonInVariableWarnings =
 		new Option<>("disable single colon in variable name warnings", false);
 	public static final Option<Boolean> disableUnreachableCodeWarnings = new Option<>("disable unreachable code warnings", false);
+	public static final Option<Boolean> enableSkatalyst = new Option<>("enable Skatalyst JIT compiler", true).optional(true);
 
 	@Deprecated(since = "2.3.0", forRemoval = true)
 	public static final Option<Boolean> enableScriptCaching = new Option<>("enable script caching", false)
@@ -468,6 +470,7 @@ public class SkriptConfig {
 			}
 
 			mainConfig.load(SkriptConfig.class);
+			Skatalyst.configure(enableSkatalyst.value(), caseInsensitiveVariables.value());
 		} catch (RuntimeException ex) {
 			Skript.exception(ex, "An error occurred while loading the config");
 		}

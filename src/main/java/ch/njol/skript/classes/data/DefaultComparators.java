@@ -25,6 +25,7 @@ import org.bukkit.event.entity.EntityDamageEvent.DamageCause;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.jetbrains.annotations.ApiStatus;
 import org.skriptlang.skript.bukkit.entity.EntityData;
 import org.skriptlang.skript.bukkit.entity.EntityItemTypeComparable;
 import org.bukkit.potion.PotionEffect;
@@ -38,44 +39,48 @@ import java.util.UUID;
 
 @SuppressWarnings({"rawtypes"})
 public class DefaultComparators {
+	@ApiStatus.Internal
+	public static final Comparator<Number, Number> NUMBERS = new Comparator<>() {
+		@Override
+		public Relation compare(Number first, Number second) {
+			return compareNumbers(first, second);
+		}
+
+		@Override
+		public boolean supportsOrdering() {
+			return true;
+		}
+	};
+
+	@ApiStatus.Internal
+	public static Relation compareNumbers(Number first, Number second) {
+		if (first instanceof Long && second instanceof Long)
+			return Relation.get(first.longValue() - second.longValue());
+		double epsilon = Skript.EPSILON;
+		double left;
+		double right;
+		if (first instanceof Float || second instanceof Float) {
+			left = first.floatValue();
+			right = second.floatValue();
+			epsilon = Math.min(left, right) * 1e-6;
+		} else {
+			left = first.doubleValue();
+			right = second.doubleValue();
+		}
+		if (Double.isNaN(left) || Double.isNaN(right))
+			return Relation.SMALLER;
+		if (Double.isInfinite(left) || Double.isInfinite(right))
+			return left > right ? Relation.GREATER : left < right ? Relation.SMALLER : Relation.EQUAL;
+		double difference = left - right;
+		return Math.abs(difference) < epsilon ? Relation.EQUAL : Relation.get(difference);
+	}
 	
 	public DefaultComparators() {}
 	
 	static {
 		
 		// Number - Number
-		Comparators.registerComparator(Number.class, Number.class, new Comparator<>() {
-			@Override
-			public Relation compare(Number n1, Number n2) {
-				if (n1 instanceof Long && n2 instanceof Long)
-					return Relation.get(n1.longValue() - n2.longValue());
-				double epsilon = Skript.EPSILON;
-				@SuppressWarnings("WrapperTypeMayBePrimitive") Double d1, d2;
-				if (n1 instanceof Float || n2 instanceof Float) {
-					d1 = (double) n1.floatValue();
-					d2 = (double) n2.floatValue();
-					epsilon = Math.min(d1, d2) * 1e-6; // dynamic epsilon
-				} else {
-					d1 = n1.doubleValue();
-					d2 = n2.doubleValue();
-				}
-				if (d1.isNaN() || d2.isNaN()) {
-					return Relation.SMALLER;
-				} else if (d1.isInfinite() || d2.isInfinite()) {
-					return d1 > d2 ? Relation.GREATER : d1 < d2 ? Relation.SMALLER : Relation.EQUAL;
-				} else {
-					double diff = d1 - d2;
-					if (Math.abs(diff) < epsilon)
-						return Relation.EQUAL;
-					return Relation.get(diff);
-				}
-			}
-
-			@Override
-			public boolean supportsOrdering() {
-				return true;
-			}
-		});
+		Comparators.registerComparator(Number.class, Number.class, NUMBERS);
 		
 		// Slot - Slot
 		Comparators.registerComparator(Slot.class, Slot.class, new Comparator<Slot, Slot>() {

@@ -21,14 +21,17 @@ import ch.njol.util.coll.iterator.EmptyIterator;
 import ch.njol.yggdrasil.Yggdrasil;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
+import io.gunmu.skatalyst.Skatalyst;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.serialization.ConfigurationSerializable;
 import org.bukkit.configuration.serialization.ConfigurationSerialization;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 import org.skriptlang.skript.lang.converter.Converters;
+import org.skriptlang.skript.util.IndexTrackingTreeMap;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -424,6 +427,27 @@ public class Variables {
 			return null;
 
 		return from.copy();
+	}
+
+	/**
+	 * Tests whether delayed scalar writes can use the standard local tree representation.
+	 * A Java TreeMap stored as a value can become a tree branch when overwritten.
+	 */
+	@ApiStatus.Internal
+	public static boolean skatalystCanBatchScalarWrites(Event event, List<String> names) {
+		if (Skatalyst.localsEscaped(event))
+			return false;
+		VariablesMap variables = localVariables.get(event);
+		if (variables == null)
+			return true;
+		for (String name : names) {
+			Object child = variables.treeMap.get(name);
+			if (child instanceof TreeMap<?, ?> tree
+					&& (tree.getClass() != IndexTrackingTreeMap.class
+						|| tree.comparator() != VariablesMap.VARIABLE_NAME_COMPARATOR))
+				return false;
+		}
+		return true;
 	}
 
 	/**

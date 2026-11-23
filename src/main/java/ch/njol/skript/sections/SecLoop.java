@@ -17,10 +17,12 @@ import ch.njol.skript.util.LiteralUtils;
 import ch.njol.util.Kleenean;
 import com.google.common.collect.PeekingIterator;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnknownNullability;
 
 import java.util.*;
+import java.util.stream.LongStream;
 
 @Name("Loop")
 @Description({
@@ -176,6 +178,22 @@ public class SecLoop extends LoopSection {
 	protected void store(Event event, Object next) {
 		this.current.put(event, next);
 		this.currentLoopCounter.put(event, (currentLoopCounter.getOrDefault(event, 0L)) + 1);
+	}
+
+	/** @return Whether the interpreter has already entered this loop for the event. */
+	@ApiStatus.Internal
+	public boolean skatalystHasIterator(Event event) {
+		return iteratorMap.containsKey(event);
+	}
+
+	/** Restores the iterator and current value when compiled code returns to the original loop body. */
+	@ApiStatus.Internal
+	public void skatalystResumeCounted(Event event, long iteration, long exclusiveLimit) {
+		iteratorMap.put(event, LongStream.range(iteration + 1, exclusiveLimit).iterator());
+		if (iteration > 1)
+			previous.put(event, iteration - 1);
+		current.put(event, iteration);
+		currentLoopCounter.put(event, iteration);
 	}
 
 	@Override

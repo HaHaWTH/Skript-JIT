@@ -4,6 +4,7 @@ import ch.njol.skript.Skript;
 import ch.njol.skript.lang.Literal;
 import ch.njol.skript.lang.SkriptEvent;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
+import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
 import org.skriptlang.skript.bukkit.entity.EntityType;
 import ch.njol.skript.registrations.EventConverter;
 import ch.njol.skript.registrations.EventValues;

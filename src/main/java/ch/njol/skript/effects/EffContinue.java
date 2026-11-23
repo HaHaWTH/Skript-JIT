@@ -12,6 +12,7 @@ import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.util.Kleenean;
 import ch.njol.util.StringUtils;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnknownNullability;
 
@@ -92,10 +93,20 @@ public class EffContinue extends Effect {
 
 	@Override
 	protected @Nullable TriggerItem walk(Event event) {
+		skatalystLeaveSections(event);
+		return loop;
+	}
+
+	@ApiStatus.Internal
+	public final LoopSection skatalystLoop() {
+		return loop;
+	}
+
+	@ApiStatus.Internal
+	public final void skatalystLeaveSections(Event event) {
 		debug(event, false);
 		for (SectionExitHandler section : sectionsToExit)
 			section.exit(event);
-		return loop;
 	}
 
 	@Override

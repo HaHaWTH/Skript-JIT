@@ -1,7 +1,9 @@
 package ch.njol.skript.lang;
 
 import ch.njol.skript.variables.Variables;
+import io.gunmu.skatalyst.Skatalyst;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.script.Script;
 
@@ -13,12 +15,14 @@ public class Trigger extends TriggerSection {
 	private final SkriptEvent event;
 
 	private final @Nullable Script script;
+	private final Skatalyst.Site skatalystSite;
 	private int line = -1; // -1 is default: it means there is no line number available
 	private String debugLabel;
 
 	public Trigger(@Nullable Script script, String name, SkriptEvent event, List<TriggerItem> items) {
 		super(items);
 		this.script = script;
+		skatalystSite = new Skatalyst.Site(this, script == null ? null : script.skatalystScope());
 		this.name = name;
 		this.event = event;
 		this.debugLabel = "unknown trigger";
@@ -76,6 +80,11 @@ public class Trigger extends TriggerSection {
 	 */
 	public @Nullable Script getScript() {
 		return script;
+	}
+
+	@ApiStatus.Internal
+	public final Skatalyst.Site skatalystSite() {
+		return skatalystSite;
 	}
 
 	/**

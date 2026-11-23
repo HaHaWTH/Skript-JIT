@@ -14,6 +14,7 @@ import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.lang.util.SimpleExpression;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 @Name("Loop Iteration")
@@ -73,6 +74,12 @@ public class ExprLoopIteration extends SimpleExpression<Long> {
 
 		this.loop = loop;
 		return true;
+	}
+
+	/** @return Whether this expression reads the specified loop's current iteration. */
+	@ApiStatus.Internal
+	public boolean skatalystIsIterationOf(LoopSection loop) {
+		return this.loop == loop;
 	}
 
 	@Override
