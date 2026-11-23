@@ -2,7 +2,7 @@
 
 ---
 
-## Skatalyst JIT
+## Skript JIT
 
 Skript JIT adds Skatalyst, a JIT compiler that turns hot Skript triggers into JVM bytecode.
 
