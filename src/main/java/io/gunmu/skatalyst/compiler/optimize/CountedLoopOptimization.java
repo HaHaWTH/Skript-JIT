@@ -13,16 +13,15 @@ import ch.njol.skript.expressions.arithmetic.ExprArithmetic;
 import ch.njol.skript.lang.Expression;
 import ch.njol.skript.lang.TriggerItem;
 import ch.njol.skript.lang.Variable;
-import ch.njol.skript.lang.util.SimpleLiteral;
 import ch.njol.skript.registrations.Classes;
 import ch.njol.skript.sections.SecLoop;
-import ch.njol.skript.variables.Variables;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
+import io.gunmu.skatalyst.compiler.optimize.NumericSlots.NumericKind;
+import io.gunmu.skatalyst.compiler.optimize.NumericSlots.Slot;
 import org.jetbrains.annotations.Nullable;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Type;
-import org.skriptlang.skript.lang.arithmetic.Arithmetics;
 import org.skriptlang.skript.lang.arithmetic.Operation;
 import org.skriptlang.skript.lang.arithmetic.OperationInfo;
 import org.skriptlang.skript.lang.arithmetic.Operator;
@@ -39,11 +38,8 @@ import static org.objectweb.asm.Opcodes.*;
 final class CountedLoopOptimization {
 
 	private static final String EVENT = "Lorg/bukkit/event/Event;";
-	private static final String OBJECT = "Ljava/lang/Object;";
-	private static final String VARIABLES = Type.getInternalName(Variables.class);
 	private static final String LOOP = Type.getInternalName(SecLoop.class);
 	private static final String TIMES = Type.getInternalName(ExprTimes.class);
-	private static final String STRING = "Ljava/lang/String;";
 	private static final List<Class<?>> INTEGRAL_TYPES = List.of(Long.class, Integer.class);
 
 	// Keep the body of a single macro small enough for HotSpot to compile the surrounding dispatch.
@@ -67,8 +63,7 @@ final class CountedLoopOptimization {
 	}
 
 	private static @Nullable LoopBody loopBody(SecLoop loop, NumericKind kind) {
-		var storedClass = Classes.getSuperClassInfo(kind.boxed());
-		if (storedClass.getSerializeAs() != null || storedClass.getCloner() != null)
+		if (!kind.canStoreDirectly())
 			return null;
 		List<Assignment> assignments = new ArrayList<>();
 		Set<String> names = new LinkedHashSet<>();
@@ -98,7 +93,7 @@ final class CountedLoopOptimization {
 				}
 				default -> null;
 			};
-			if (value == null || !value.possibleTypes().equals(List.of(kind.boxed()))
+			if (value == null || !value.possibleTypes().equals(List.of(kind.boxed))
 					|| (nodes += value.nodes()) > MAX_ARITHMETIC_NODES)
 				return null;
 			Map<String, Boolean> reads = new LinkedHashMap<>();
@@ -125,7 +120,7 @@ final class CountedLoopOptimization {
 			if (name == null)
 				return null;
 			Variable<?> variable = (Variable<?>) expression;
-			return variable.skatalystAcceptsRaw(kind.boxed())
+			return variable.skatalystAcceptsRaw(kind.boxed)
 				? new Read(name, kind, variable.skatalystAcceptsRaw(Integer.class))
 				: null;
 		}
@@ -147,12 +142,8 @@ final class CountedLoopOptimization {
 			return Iteration.CURRENT;
 		if (expression.getClass() == ExprLoopIteration.class && ((ExprLoopIteration) expression).skatalystIsIterationOf(loop))
 			return Iteration.CURRENT;
-		if (expression.getClass() != SimpleLiteral.class)
-			return null;
-		Object[] values = ((SimpleLiteral<?>) expression).getAll();
-		if (values.length != 1 || !(values[0] instanceof Long || values[0] instanceof Integer || values[0] instanceof Double))
-			return null;
-		return new Constant((Number) values[0]);
+		Number value = NumericSlots.literal(expression);
+		return value == null ? null : new Constant(value);
 	}
 
 	private static boolean usesNumericOperation(Operator operator, @Nullable OperationInfo<?, ?, ?> parsed, Class<?> result,
@@ -175,39 +166,11 @@ final class CountedLoopOptimization {
 			return false;
 		for (Class<?> leftType : left.possibleTypes()) {
 			for (Class<?> rightType : right.possibleTypes()) {
-				var actual = Arithmetics.getOperationInfo(operator, leftType, rightType);
-				if (actual == null || actual.operation() != builtin)
+				if (!NumericSlots.usesOperation(operator, leftType, rightType, builtin))
 					return false;
 			}
 		}
 		return true;
-	}
-
-	private enum NumericKind {
-		INTEGRAL(Type.LONG_TYPE, Long.class, "longValue"),
-		DECIMAL(Type.DOUBLE_TYPE, Double.class, "doubleValue");
-
-		private final Type type;
-		private final Class<?> boxed;
-		private final String unbox;
-
-		NumericKind(Type type, Class<?> boxed, String unbox) {
-			this.type = type;
-			this.boxed = boxed;
-			this.unbox = unbox;
-		}
-
-		Class<?> boxed() {
-			return boxed;
-		}
-
-		int loadOpcode() {
-			return type.getOpcode(ILOAD);
-		}
-
-		int storeOpcode() {
-			return type.getOpcode(ISTORE);
-		}
 	}
 
 	private sealed interface NumberValue permits Constant, Read, Iteration, BinaryOperation {
@@ -316,7 +279,7 @@ final class CountedLoopOptimization {
 				method.visitInsn(LCMP);
 				method.visitJumpInsn(IFNE, overflow);
 			} else {
-				emitIntegralResultTypeCheck(method, leftLocal, rightLocal, result, overflow);
+				NumericSlots.guardIntegralResult(method, leftLocal, rightLocal, result, overflow);
 			}
 			method.visitVarInsn(LLOAD, result);
 		}
@@ -326,21 +289,6 @@ final class CountedLoopOptimization {
 			operand.emit(emitter, slots, iteration, overflow);
 			if (operand.kind() != kind)
 				emitter.method().visitInsn(L2D);
-		}
-
-		private static void emitIntegralResultTypeCheck(MethodVisitor method, int leftLocal, int rightLocal, int result,
-				Label overflow) {
-			// The existing builtins use this type-promotion predicate for both addition and subtraction.
-			method.visitVarInsn(LLOAD, leftLocal);
-			method.visitVarInsn(LLOAD, result);
-			method.visitInsn(LXOR);
-			method.visitVarInsn(LLOAD, rightLocal);
-			method.visitVarInsn(LLOAD, result);
-			method.visitInsn(LXOR);
-			method.visitInsn(LAND);
-			method.visitInsn(LCONST_0);
-			method.visitInsn(LCMP);
-			method.visitJumpInsn(IFLT, overflow);
 		}
 
 		@Override
@@ -372,8 +320,6 @@ final class CountedLoopOptimization {
 	}
 
 	private record Assignment(TriggerItem effect, String name, NumberValue value) { }
-
-	private record Slot(int value, int dirty) { }
 
 	private record CountedLoop(SecLoop loop, ExprTimes times, List<LoopBody> bodies)
 			implements BytecodeCompiler.Optimization {
@@ -447,17 +393,16 @@ final class CountedLoopOptimization {
 			Map<String, Slot> slots = new LinkedHashMap<>();
 			int initial = emitter.newLocal(Type.getType(Object.class));
 			for (String name : names) {
-				var slot = new Slot(emitter.newLocal(kind.type), emitter.newLocal(Type.INT_TYPE));
+				var slot = new Slot(emitter, kind);
 				slots.put(name, slot);
 				Boolean acceptsInteger = initialReads.get(name);
 				if (acceptsInteger != null) {
-					emitRead(emitter, name, kind, acceptsInteger, slot, initial, miss);
+					NumericSlots.emitRead(emitter, name, kind, acceptsInteger, slot, initial, miss);
 				} else {
 					method.visitInsn(kind == NumericKind.INTEGRAL ? LCONST_0 : DCONST_0);
 					method.visitVarInsn(kind.storeOpcode(), slot.value());
 				}
-				method.visitInsn(ICONST_0);
-				method.visitVarInsn(ISTORE, slot.dirty());
+				slot.markDirty(method, false);
 			}
 
 			method.visitLabel(head);
@@ -469,8 +414,7 @@ final class CountedLoopOptimization {
 				assignment.value().emit(emitter, slots, iteration, overflow);
 				Slot slot = slots.get(assignment.name());
 				method.visitVarInsn(kind.storeOpcode(), slot.value());
-				method.visitInsn(ICONST_1);
-				method.visitVarInsn(ISTORE, slot.dirty());
+				slot.markDirty(method, true);
 			}
 			method.visitVarInsn(LLOAD, iteration);
 			method.visitInsn(LCONST_1);
@@ -481,62 +425,17 @@ final class CountedLoopOptimization {
 			method.visitInsn(LCMP);
 			method.visitJumpInsn(IFLT, head);
 
-			emitSpill(emitter, slots, kind);
+			NumericSlots.emitSpill(emitter, slots, kind);
 			emitter.loadActualNext(loop.loop());
 			method.visitJumpInsn(GOTO, done);
 
 			for (var exit : overflowExits.entrySet()) {
 				method.visitLabel(exit.getKey());
-				emitSpill(emitter, slots, kind);
+				NumericSlots.emitSpill(emitter, slots, kind);
 				loop.emitResume(emitter, iteration, limit, exit.getValue());
 				method.visitJumpInsn(GOTO, done);
 			}
 		}
 	}
 
-	private static void emitRead(BytecodeCompiler.Emitter emitter, String name, NumericKind kind, boolean acceptsInteger,
-			Slot slot,
-			int initial, Label miss) {
-		MethodVisitor method = emitter.method();
-		emitter.loadConstant(name, String.class);
-		emitter.loadEvent();
-		method.visitInsn(ICONST_1);
-		method.visitMethodInsn(INVOKESTATIC, VARIABLES, "getVariable", "(" + STRING + EVENT + "Z)" + OBJECT, false);
-		method.visitVarInsn(ASTORE, initial);
-
-		method.visitVarInsn(ALOAD, initial);
-		method.visitTypeInsn(INSTANCEOF, Type.getInternalName(kind.boxed));
-		if (kind == NumericKind.INTEGRAL && acceptsInteger) {
-			Label integral = new Label();
-			method.visitJumpInsn(IFNE, integral);
-			method.visitVarInsn(ALOAD, initial);
-			method.visitTypeInsn(INSTANCEOF, "java/lang/Integer");
-			method.visitJumpInsn(IFEQ, miss);
-			method.visitLabel(integral);
-		} else {
-			method.visitJumpInsn(IFEQ, miss);
-		}
-		method.visitVarInsn(ALOAD, initial);
-		method.visitTypeInsn(CHECKCAST, "java/lang/Number");
-		method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Number", kind.unbox, "()" + kind.type.getDescriptor(), false);
-		method.visitVarInsn(kind.storeOpcode(), slot.value());
-	}
-
-	private static void emitSpill(BytecodeCompiler.Emitter emitter, Map<String, Slot> slots, NumericKind kind) {
-		MethodVisitor method = emitter.method();
-		for (var entry : slots.entrySet()) {
-			Slot slot = entry.getValue();
-			Label clean = new Label();
-			method.visitVarInsn(ILOAD, slot.dirty());
-			method.visitJumpInsn(IFEQ, clean);
-			emitter.loadConstant(entry.getKey(), String.class);
-			method.visitVarInsn(kind.loadOpcode(), slot.value());
-			method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(kind.boxed), "valueOf",
-				Type.getMethodDescriptor(Type.getType(kind.boxed), kind.type), false);
-			emitter.loadEvent();
-			method.visitInsn(ICONST_1);
-			method.visitMethodInsn(INVOKESTATIC, VARIABLES, "setVariable", "(" + STRING + OBJECT + EVENT + "Z)V", false);
-			method.visitLabel(clean);
-		}
-	}
 }

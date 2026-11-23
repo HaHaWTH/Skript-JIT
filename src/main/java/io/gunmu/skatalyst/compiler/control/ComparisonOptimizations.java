@@ -9,6 +9,7 @@ import ch.njol.skript.lang.Variable;
 import ch.njol.skript.lang.util.SimpleLiteral;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
@@ -19,7 +20,8 @@ import org.skriptlang.skript.lang.comparator.Relation;
 
 import static org.objectweb.asm.Opcodes.*;
 
-final class ComparisonOptimizations {
+@ApiStatus.Internal
+public final class ComparisonOptimizations {
 
 	private static final Type OBJECT = Type.getType(Object.class);
 	private static final Type EVENT = Type.getType(Event.class);
@@ -42,7 +44,7 @@ final class ComparisonOptimizations {
 			return null;
 		boolean fixedNumber = binary.comparator() == DefaultComparators.NUMBERS;
 		boolean dynamic = binary.comparator() == null;
-		boolean longs = fixedNumber || dynamic && usesNumberComparator(Long.class);
+		boolean longs = usesLongComparator(binary);
 		boolean doubles = dynamic && usesNumberComparator(Double.class);
 		if (!longs && !doubles)
 			return null;
@@ -52,6 +54,26 @@ final class ComparisonOptimizations {
 	private static boolean usesNumberComparator(Class<? extends Number> type) {
 		Comparator<?, ?> comparator = Comparators.getComparator(type, type);
 		return comparator == DefaultComparators.NUMBERS;
+	}
+
+	public static boolean usesLongComparator(CondCompare.BinaryComparison binary) {
+		return binary.comparator() == DefaultComparators.NUMBERS
+			|| binary.comparator() == null && usesNumberComparator(Long.class);
+	}
+
+	/** Branches on two primitive longs using the built-in comparator's wrapping subtraction. */
+	public static void jumpIfLongRelation(MethodVisitor method, Relation relation, Label target) {
+		method.visitInsn(LSUB);
+		method.visitInsn(LCONST_0);
+		method.visitInsn(LCMP);
+		method.visitJumpInsn(switch (relation) {
+			case EQUAL -> IFEQ;
+			case NOT_EQUAL -> IFNE;
+			case GREATER -> IFGT;
+			case GREATER_OR_EQUAL -> IFGE;
+			case SMALLER -> IFLT;
+			case SMALLER_OR_EQUAL -> IFLE;
+		}, target);
 	}
 
 	private static @Nullable Operand operand(Expression<?> expression) {
@@ -156,20 +178,9 @@ final class ComparisonOptimizations {
 			MethodVisitor method = emitter.method();
 			emitLongValue(method, left);
 			emitLongValue(method, right);
-			// The built-in comparator tests the sign of a wrapping subtraction.
-			method.visitInsn(LSUB);
-			method.visitInsn(LCONST_0);
-			method.visitInsn(LCMP);
 			Label pass = new Label();
 			Label done = new Label();
-			method.visitJumpInsn(switch (relation) {
-				case EQUAL -> IFEQ;
-				case NOT_EQUAL -> IFNE;
-				case GREATER -> IFGT;
-				case GREATER_OR_EQUAL -> IFGE;
-				case SMALLER -> IFLT;
-				case SMALLER_OR_EQUAL -> IFLE;
-			}, pass);
+			jumpIfLongRelation(method, relation, pass);
 			method.visitInsn(ICONST_0);
 			method.visitJumpInsn(GOTO, done);
 			method.visitLabel(pass);

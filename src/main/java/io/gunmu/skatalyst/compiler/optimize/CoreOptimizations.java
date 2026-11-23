@@ -6,6 +6,7 @@ import ch.njol.skript.lang.TriggerItem;
 import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.lang.Variable;
 import ch.njol.skript.sections.SecLoop;
+import ch.njol.skript.sections.SecWhile;
 import ch.njol.skript.variables.Variables;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import org.bukkit.event.Event;
@@ -41,6 +42,8 @@ public final class CoreOptimizations {
 			BytecodeCompiler.Optimization optimization = null;
 			if (item.getClass() == SecLoop.class) {
 				optimization = CountedLoopOptimization.plan((SecLoop) item);
+			} else if (item.getClass() == SecWhile.class) {
+				optimization = WhileLoopOptimization.plan((SecWhile) item);
 			} else if (item.getClass() == EffChange.class) {
 				optimization = StringConcatenationOptimization.plan((EffChange) item);
 			}

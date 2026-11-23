@@ -97,8 +97,14 @@ public class SecWhile extends LoopSection {
 
 	@ApiStatus.Internal
 	public final @Nullable TriggerItem skatalystEnterLoop(Event event) {
-		currentLoopCounter.put(event, currentLoopCounter.getOrDefault(event, 0L) + 1);
+		skatalystAdvanceIterations(event, 1);
 		return walk(event, true);
+	}
+
+	/** Restores iterations entered in primitive slots on top of the event's existing loop state. */
+	@ApiStatus.Internal
+	public final void skatalystAdvanceIterations(Event event, long entered) {
+		currentLoopCounter.put(event, currentLoopCounter.getOrDefault(event, 0L) + entered);
 	}
 
 	@ApiStatus.Internal

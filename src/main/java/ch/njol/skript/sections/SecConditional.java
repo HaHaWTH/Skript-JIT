@@ -316,6 +316,16 @@ public class SecConditional extends Section {
 	}
 
 	@ApiStatus.Internal
+	public final @Nullable CondCompare skatalystSimpleIfComparison() {
+		return type == ConditionalType.IF && !multiline ? scalarComparison : null;
+	}
+
+	@ApiStatus.Internal
+	public final boolean skatalystIsElse() {
+		return type == ConditionalType.ELSE;
+	}
+
+	@ApiStatus.Internal
 	public final @Nullable TriggerItem skatalystEnterBranch() {
 		// A multiline conditional runs its accompanying "then" section instead.
 		SecConditional sectionToRun = multiline ? (SecConditional) getActualNext() : this;
