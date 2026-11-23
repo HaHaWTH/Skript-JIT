@@ -108,6 +108,16 @@ public class SecWhile extends LoopSection {
 	}
 
 	@ApiStatus.Internal
+	public final long skatalystCompletedIterations(Event event) {
+		return currentLoopCounter.getOrDefault(event, 0L);
+	}
+
+	@ApiStatus.Internal
+	public final void skatalystRestoreIterations(Event event, long iteration) {
+		currentLoopCounter.put(event, iteration);
+	}
+
+	@ApiStatus.Internal
 	public final @Nullable TriggerItem skatalystLeaveLoop(Event event) {
 		exit(event);
 		debug(event, false);

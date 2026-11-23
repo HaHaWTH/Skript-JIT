@@ -100,6 +100,11 @@ public class EffExit extends Effect {
 	}
 
 	@ApiStatus.Internal
+	public final @Nullable TriggerSection skatalystTarget() {
+		return outerSection;
+	}
+
+	@ApiStatus.Internal
 	public final @Nullable TriggerItem skatalystExit(Event event) {
 		debug(event, false);
 		for (SectionExitHandler section : sectionsToExit)

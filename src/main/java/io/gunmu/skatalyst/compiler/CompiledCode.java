@@ -13,10 +13,24 @@ public final class CompiledCode {
 
 	private final IdentityHashMap<TriggerItem, Entry> entries;
 	private final Set<TriggerItem> optimized;
+	private final @Nullable DirectFunction function;
 
 	CompiledCode(IdentityHashMap<TriggerItem, Entry> entries, Set<TriggerItem> optimized) {
+		this(entries, optimized, null);
+	}
+
+	private CompiledCode(IdentityHashMap<TriggerItem, Entry> entries, Set<TriggerItem> optimized, @Nullable DirectFunction function) {
 		this.entries = entries;
 		this.optimized = optimized;
+		this.function = function;
+	}
+
+	CompiledCode withFunction(DirectFunction function) {
+		return new CompiledCode(entries, optimized, function);
+	}
+
+	public @Nullable DirectFunction directFunction() {
+		return function;
 	}
 
 	public boolean isEmpty() {

@@ -38,12 +38,15 @@ public final class CoreOptimizations {
 
 	private static void collect(TriggerSection section, Map<TriggerItem, BytecodeCompiler.Optimization> result) {
 		ReferenceSlotOptimization.collect(section.skatalystItems(), result);
+		ScalarArithmeticOptimization.collect(section.skatalystItems(), result);
 		for (TriggerItem item : section.skatalystItems()) {
 			BytecodeCompiler.Optimization optimization = null;
 			if (item.getClass() == SecLoop.class) {
-				optimization = CountedLoopOptimization.plan((SecLoop) item);
+				optimization = NumericLoopOptimization.plan((SecLoop) item);
+				if (optimization == null)
+					optimization = CollectionLoopOptimization.plan((SecLoop) item);
 			} else if (item.getClass() == SecWhile.class) {
-				optimization = WhileLoopOptimization.plan((SecWhile) item);
+				optimization = NumericLoopOptimization.plan((SecWhile) item);
 			} else if (item.getClass() == EffChange.class) {
 				optimization = StringConcatenationOptimization.plan((EffChange) item);
 			}

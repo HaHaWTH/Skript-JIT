@@ -321,6 +321,11 @@ public class SecConditional extends Section {
 	}
 
 	@ApiStatus.Internal
+	public final @Nullable CondCompare skatalystElseIfComparison() {
+		return type == ConditionalType.ELSE_IF && !multiline ? scalarComparison : null;
+	}
+
+	@ApiStatus.Internal
 	public final boolean skatalystIsElse() {
 		return type == ConditionalType.ELSE;
 	}

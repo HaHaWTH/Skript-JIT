@@ -8,10 +8,12 @@ import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.log.SkriptLogger;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import io.gunmu.skatalyst.compiler.CompiledCode;
+import io.gunmu.skatalyst.compiler.DirectFunction;
 import org.bukkit.Bukkit;
 import org.bukkit.event.Event;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
+import org.skriptlang.skript.common.function.Signature;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -81,6 +83,7 @@ public final class Skatalyst {
 
 		private final Trigger trigger;
 		private final @Nullable Scope scope;
+		private @Nullable Signature<?> functionSignature;
 
 		private volatile int calls;
 		private volatile int backedges;
@@ -91,6 +94,22 @@ public final class Skatalyst {
 		public Site(Trigger trigger, @Nullable Scope scope) {
 			this.trigger = trigger;
 			this.scope = scope;
+		}
+
+		public void setFunctionSignature(Signature<?> signature) {
+			this.functionSignature = signature;
+		}
+
+		public @Nullable Signature<?> functionSignature() {
+			return functionSignature;
+		}
+
+		public @Nullable DirectFunction directFunction() {
+			if (!enabled || SkriptLogger.debug() || scope == null || scope.stage != Scope.Stage.ACTIVE
+					|| trigger.getActualNext() != null)
+				return null;
+			CompiledCode compiled = code();
+			return compiled == null ? null : compiled.directFunction();
 		}
 
 		private @Nullable CompiledCode code() {

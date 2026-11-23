@@ -67,6 +67,15 @@ public class DefaultComparators {
 			left = first.doubleValue();
 			right = second.doubleValue();
 		}
+		return compareDecimals(left, right, epsilon);
+	}
+
+	@ApiStatus.Internal
+	public static Relation compareDoubles(double left, double right) {
+		return compareDecimals(left, right, Skript.EPSILON);
+	}
+
+	private static Relation compareDecimals(double left, double right, double epsilon) {
 		if (Double.isNaN(left) || Double.isNaN(right))
 			return Relation.SMALLER;
 		if (Double.isInfinite(left) || Double.isInfinite(right))

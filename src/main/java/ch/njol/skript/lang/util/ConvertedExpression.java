@@ -11,6 +11,7 @@ import ch.njol.skript.util.Utils;
 import ch.njol.util.Kleenean;
 import ch.njol.util.coll.CollectionUtils;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.converter.Converter;
 import org.skriptlang.skript.lang.converter.ConverterInfo;
@@ -206,6 +207,19 @@ public class ConvertedExpression<F, T> implements Expression<T> {
 		if (value == null)
 			return null;
 		return converter.convert(value);
+	}
+
+	/** Exposes the immediate input for scalar return lowering. */
+	@ApiStatus.Internal
+	public final Expression<?> skatalystInput() {
+		return source;
+	}
+
+	/** Applies the parsed converter to an already evaluated non-null scalar. */
+	@ApiStatus.Internal
+	@SuppressWarnings("unchecked")
+	public final @Nullable Object skatalystConvertScalar(Object value) {
+		return converter.convert((F) value);
 	}
 
 	@Override

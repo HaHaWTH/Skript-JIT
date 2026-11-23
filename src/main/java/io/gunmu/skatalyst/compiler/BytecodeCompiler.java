@@ -4,9 +4,11 @@ import ch.njol.skript.lang.LoopSection;
 import ch.njol.skript.lang.Trigger;
 import ch.njol.skript.lang.TriggerItem;
 import ch.njol.skript.lang.TriggerSection;
+import ch.njol.skript.lang.util.ConvertedExpression;
 import io.gunmu.skatalyst.Skatalyst;
 import io.gunmu.skatalyst.compiler.control.BranchOptimizations;
 import io.gunmu.skatalyst.compiler.optimize.CoreOptimizations;
+import io.gunmu.skatalyst.compiler.optimize.ScalarFunctionOptimization;
 import org.bukkit.event.Event;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
@@ -20,11 +22,13 @@ import org.objectweb.asm.Type;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import static org.objectweb.asm.Opcodes.*;
 
@@ -53,7 +57,28 @@ public final class BytecodeCompiler {
 	public static CompiledCode compile(Trigger trigger) {
 		Map<TriggerItem, Optimization> optimizations = BranchOptimizations.plan(trigger);
 		optimizations.putAll(CoreOptimizations.plan(trigger));
-		return compile(trigger, optimizations);
+		CompiledCode code = compile(trigger, optimizations);
+		DirectFunction function = ScalarFunctionOptimization.compile(trigger);
+		return function == null ? code : code.withFunction(function);
+	}
+
+	public static DirectFunction compileFunction(List<String> parameters, @Nullable ConvertedExpression<?, ?> conversion, Consumer<Emitter> emit) {
+		ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
+		writer.visit(V21, ACC_FINAL | ACC_SUPER, "io/gunmu/skatalyst/compiler/CompiledScalarFunction", null,
+			"java/lang/Object", new String[]{Type.getInternalName(DirectFunction.Body.class)});
+		writeConstructor(writer);
+		Type object = Type.getType(Object.class);
+		Type[] arguments = new Type[DirectFunction.MAX_PARAMETERS];
+		Arrays.fill(arguments, object);
+		MethodVisitor method = writer.visitMethod(ACC_PUBLIC, "invoke", Type.getMethodDescriptor(object, arguments), null, null);
+		Emitter emitter = new Emitter(method, TriggerItem.skatalystWalkHandle());
+		emitter.nextLocal = arguments.length + 1;
+		method.visitCode();
+		emit.accept(emitter);
+		method.visitMaxs(0, 0);
+		method.visitEnd();
+		writer.visitEnd();
+		return new DirectFunction(parameters, (DirectFunction.Body) link(writer, emitter.constants), conversion);
 	}
 
 	public static CompiledCode compile(Trigger trigger, Map<TriggerItem, Optimization> optimizations) {
@@ -206,13 +231,17 @@ public final class BytecodeCompiler {
 
 	private record EncodedChunk(ClassWriter writer, List<Object> constants, List<TriggerItem> optimized, int length) {
 		private CompiledCode.Chunk link() {
-			try {
-				MethodHandles.Lookup hidden = MethodHandles.lookup().defineHiddenClassWithClassData(
-					writer.toByteArray(), List.copyOf(constants), true);
-				return (CompiledCode.Chunk) hidden.lookupClass().getDeclaredConstructor().newInstance();
-			} catch (ReflectiveOperationException exception) {
-				throw new IllegalStateException("Could not link Skatalyst bytecode", exception);
-			}
+			return (CompiledCode.Chunk) BytecodeCompiler.link(writer, constants);
+		}
+	}
+
+	private static Object link(ClassWriter writer, List<Object> constants) {
+		try {
+			MethodHandles.Lookup hidden = MethodHandles.lookup().defineHiddenClassWithClassData(
+				writer.toByteArray(), List.copyOf(constants), true);
+			return hidden.lookupClass().getDeclaredConstructor().newInstance();
+		} catch (ReflectiveOperationException exception) {
+			throw new IllegalStateException("Could not link Skatalyst bytecode", exception);
 		}
 	}
 

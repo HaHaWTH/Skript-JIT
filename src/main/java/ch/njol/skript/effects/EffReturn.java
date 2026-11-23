@@ -114,6 +114,11 @@ public class EffReturn extends Effect {
 		return ((TriggerSection) handler).getNext();
 	}
 
+	@ApiStatus.Internal
+	public final @Nullable Expression<?> skatalystScalarValue() {
+		return sectionsToExit.isEmpty() && value.isSingle() ? value : null;
+	}
+
 	@Override
 	protected void execute(Event event) {
 		assert false;

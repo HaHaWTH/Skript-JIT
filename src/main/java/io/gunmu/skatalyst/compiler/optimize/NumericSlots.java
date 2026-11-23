@@ -55,9 +55,36 @@ final class NumericSlots {
 		}
 	}
 
-	record Slot(int value, int dirty) {
+	record Slot(int value, int dirty, int reference) {
+		Slot(int value, int dirty) {
+			this(value, dirty, -1);
+		}
+
 		Slot(BytecodeCompiler.Emitter emitter, NumericKind kind) {
 			this(emitter.newLocal(kind.type), emitter.newLocal(Type.INT_TYPE));
+		}
+
+		Slot(BytecodeCompiler.Emitter emitter, NumericKind kind, boolean keepReference) {
+			this(emitter.newLocal(kind.type), emitter.newLocal(Type.INT_TYPE),
+				keepReference ? emitter.newLocal(OBJECT) : -1);
+		}
+
+		void loadBox(MethodVisitor method, NumericKind kind) {
+			Label ready = new Label();
+			if (reference >= 0) {
+				method.visitVarInsn(ALOAD, reference);
+				method.visitInsn(DUP);
+				method.visitJumpInsn(IFNONNULL, ready);
+				method.visitInsn(POP);
+			}
+			method.visitVarInsn(kind.loadOpcode(), value);
+			method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(kind.boxed), "valueOf",
+				Type.getMethodDescriptor(Type.getType(kind.boxed), kind.type), false);
+			if (reference >= 0) {
+				method.visitInsn(DUP);
+				method.visitVarInsn(ASTORE, reference);
+				method.visitLabel(ready);
+			}
 		}
 
 		void markDirty(MethodVisitor method, boolean written) {
@@ -118,19 +145,21 @@ final class NumericSlots {
 		method.visitTypeInsn(CHECKCAST, "java/lang/Number");
 		method.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Number", kind.unbox, "()" + kind.type.getDescriptor(), false);
 		method.visitVarInsn(kind.storeOpcode(), slot.value());
+		if (slot.reference() >= 0) {
+			method.visitVarInsn(ALOAD, initial);
+			method.visitVarInsn(ASTORE, slot.reference());
+		}
 	}
 
-	static void emitSpill(BytecodeCompiler.Emitter emitter, Map<String, Slot> slots, NumericKind kind) {
+	static void emitSpill(BytecodeCompiler.Emitter emitter, Map<String, Slot> slots, Map<String, NumericKind> writes) {
 		MethodVisitor method = emitter.method();
-		for (var entry : slots.entrySet()) {
-			Slot slot = entry.getValue();
+		for (var entry : writes.entrySet()) {
+			Slot slot = slots.get(entry.getKey());
 			Label clean = new Label();
 			method.visitVarInsn(ILOAD, slot.dirty());
 			method.visitJumpInsn(IFEQ, clean);
 			emitter.loadConstant(entry.getKey(), String.class);
-			method.visitVarInsn(kind.loadOpcode(), slot.value());
-			method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(kind.boxed), "valueOf",
-				Type.getMethodDescriptor(Type.getType(kind.boxed), kind.type), false);
+			slot.loadBox(method, entry.getValue());
 			emitter.loadEvent();
 			method.visitInsn(ICONST_1);
 			method.visitMethodInsn(INVOKESTATIC, VARIABLES, "setVariable",

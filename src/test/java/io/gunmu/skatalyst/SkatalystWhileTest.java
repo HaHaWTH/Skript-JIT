@@ -114,7 +114,7 @@ public class SkatalystWhileTest {
 	@Test
 	public void incompatibleOrExposedLocalsFallBackBeforeTheFirstEffect() throws IOException {
 		Fixture fixture = fixture(BRANCH);
-		for (Object input : new Object[]{null, 7, 1.5, "text", 42L}) {
+		for (Object input : new Object[]{null, (short) 7, 1.5, "text", 42L}) {
 			Event event = ContextlessEvent.get();
 			Event interpreted = ContextlessEvent.get();
 			try {
