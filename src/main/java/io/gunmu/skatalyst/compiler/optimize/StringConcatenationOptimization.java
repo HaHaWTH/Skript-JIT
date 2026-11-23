@@ -32,25 +32,26 @@ public final class StringConcatenationOptimization {
 		"(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;", false);
 	private static final int MAX_CONCAT_PARTS = 32;
 
-	private StringConcatenationOptimization() { }
+	private StringConcatenationOptimization() {
+	}
 
 	static @Nullable BytecodeCompiler.Optimization plan(EffChange effect) {
 		var change = effect.skatalystChange();
 		if (change.mode() != ChangeMode.SET || change.source() == null
-				|| change.source().getClass() != VariableString.class)
+			|| change.source().getClass() != VariableString.class) {
 			return null;
+		}
 		VariableString source = (VariableString) change.source();
-		if (source.isSimple() || source.getMode() == StringMode.VARIABLE_NAME)
+		if (source.isSimple() || source.getMode() == StringMode.VARIABLE_NAME) {
 			return null;
+		}
 		String name = CoreOptimizations.scalarLocal(change.target());
-		if (name == null)
-			return null;
+		if (name == null) return null;
 		List<Object> parts = source.skatalystParts();
 		return parts.size() <= MAX_CONCAT_PARTS ? new Concatenation(effect, name, source.getMode(), parts) : null;
 	}
 
-	private record Concatenation(EffChange effect, String target, StringMode mode, List<Object> parts)
-			implements BytecodeCompiler.Optimization {
+	private record Concatenation(EffChange effect, String target, StringMode mode, List<Object> parts) implements BytecodeCompiler.Optimization {
 		@Override
 		public void emit(BytecodeCompiler.Emitter emitter) {
 			MethodVisitor method = emitter.method();
@@ -77,12 +78,12 @@ public final class StringConcatenationOptimization {
 		}
 	}
 
-	/** Formats an interpolation using the same conversion and error behavior as the original expression. */
 	public static String formatStringPart(Expression<?> expression, Event event, StringMode mode) {
 		Object[] values = expression.getArray(event);
-		// VariableString inspects the first element's type before formatting.
-		if (values != null && values.length > 0)
+		// VariableString inspects the first element's type before formatting
+		if (values != null && values.length > 0) {
 			values[0].getClass();
+		}
 		return Classes.toString(values, true, mode);
 	}
 }

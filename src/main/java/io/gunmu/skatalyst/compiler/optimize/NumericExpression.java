@@ -31,7 +31,9 @@ import java.util.function.Function;
 import static io.gunmu.skatalyst.compiler.optimize.NumericSlots.NumericKind.*;
 import static org.objectweb.asm.Opcodes.*;
 
-/** The built-in arithmetic tree after Skript has resolved precedence and conversions. */
+/**
+ * The built-in arithmetic tree
+ */
 sealed interface NumericExpression {
 
 	void emit(Emitter emitter, Map<String, Slot> slots, int iteration, Label overflow);
@@ -50,16 +52,17 @@ sealed interface NumericExpression {
 		return false;
 	}
 
-	default void collectNames(Map<String, Boolean> names) {}
+	default void collectNames(Map<String, Boolean> names) {
+	}
 
 	static @Nullable NumericExpression parse(Expression<?> expression, NumericKind kind, @Nullable LoopSection loop) {
 		return parse(expression, ignored -> kind, loop);
 	}
 
-	static @Nullable NumericExpression parse(Expression<?> expression, Function<String, NumericKind> kinds,
-			@Nullable LoopSection loop) {
-		if (expression.getClass() == ExprArithmetic.class)
+	static @Nullable NumericExpression parse(Expression<?> expression, Function<String, NumericKind> kinds, @Nullable LoopSection loop) {
+		if (expression.getClass() == ExprArithmetic.class) {
 			return parse(((ExprArithmetic<?, ?, ?>) expression).skatalystArithmetic(), kinds, loop);
+		}
 		String name = CoreOptimizations.scalarLocal(expression);
 		if (name != null) {
 			Variable<?> variable = (Variable<?>) expression;
@@ -68,21 +71,23 @@ sealed interface NumericExpression {
 				? new Read(name, kind, kind == INTEGRAL && variable.skatalystAcceptsRaw(Integer.class)) : null;
 		}
 		if (loop instanceof SecLoop counted && expression.getClass() == ExprLoopValue.class
-				&& ((ExprLoopValue) expression).skatalystIsCurrentValueOf(counted))
+			&& ((ExprLoopValue) expression).skatalystIsCurrentValueOf(counted)) {
 			return Iteration.CURRENT;
+		}
 		if (loop != null && expression.getClass() == ExprLoopIteration.class
-				&& ((ExprLoopIteration) expression).skatalystIsIterationOf(loop))
+			&& ((ExprLoopIteration) expression).skatalystIsIterationOf(loop)) {
 			return Iteration.CURRENT;
+		}
 		Number value = NumericSlots.literal(expression);
 		return value == null ? null : new Constant(value);
 	}
 
 	private static @Nullable NumericExpression parse(ArithmeticGettable<?> arithmetic, Function<String, NumericKind> kinds,
-			@Nullable LoopSection loop) {
-		if (arithmetic instanceof ArithmeticExpressionInfo<?> info)
+													 @Nullable LoopSection loop) {
+		if (arithmetic instanceof ArithmeticExpressionInfo<?> info) {
 			return parse(info.expression(), kinds, loop);
-		if (arithmetic.getClass() != ArithmeticChain.class)
-			return null;
+		}
+		if (arithmetic.getClass() != ArithmeticChain.class) return null;
 		var op = ((ArithmeticChain<?, ?, ?>) arithmetic).skatalystOperation();
 		NumericExpression left = parse(op.left(), kinds, loop);
 		NumericExpression right = parse(op.right(), kinds, loop);
@@ -90,45 +95,53 @@ sealed interface NumericExpression {
 	}
 
 	static @Nullable NumericExpression change(ChangeMode mode, String target, @Nullable Expression<?> source,
-			Function<String, NumericKind> kinds, @Nullable LoopSection loop) {
-		if (source == null || (mode != ChangeMode.SET && mode != ChangeMode.ADD && mode != ChangeMode.REMOVE))
+											  Function<String, NumericKind> kinds, @Nullable LoopSection loop) {
+		if (source == null || (mode != ChangeMode.SET && mode != ChangeMode.ADD && mode != ChangeMode.REMOVE)) {
 			return null;
+		}
 		NumericExpression value = parse(source, kinds, loop);
-		if (value == null || mode == ChangeMode.SET)
+		if (value == null || mode == ChangeMode.SET) {
 			return value;
+		}
 		for (Class<?> type : value.possibleTypes()) {
-			if (Classes.getSuperClassInfo(type).getCloner() != null)
+			if (Classes.getSuperClassInfo(type).getCloner() != null) {
 				return null;
+			}
 		}
 		Operator operator = mode == ChangeMode.ADD ? Operator.ADDITION : Operator.SUBTRACTION;
 		return binary(operator, null, Object.class, new Read(target, kinds.apply(target), true), value);
 	}
 
 	private static @Nullable NumericExpression binary(Operator operator, @Nullable OperationInfo<?, ?, ?> parsed,
-			Class<?> result, @Nullable NumericExpression left, @Nullable NumericExpression right) {
-		if (left == null || right == null)
+													  Class<?> result, @Nullable NumericExpression left, @Nullable NumericExpression right) {
+		if (left == null || right == null) {
 			return null;
+		}
 		Operation<?, ?, ?> builtin;
-		if (operator == Operator.ADDITION)
+		if (operator == Operator.ADDITION) {
 			builtin = DefaultOperations.ADD_NUMBERS;
-		else if (operator == Operator.SUBTRACTION)
+		} else if (operator == Operator.SUBTRACTION) {
 			builtin = DefaultOperations.SUBTRACT_NUMBERS;
-		else if (operator == Operator.MULTIPLICATION)
+		} else if (operator == Operator.MULTIPLICATION) {
 			builtin = DefaultOperations.MULTIPLY_NUMBERS;
-		else if (operator == Operator.DIVISION)
+		} else if (operator == Operator.DIVISION) {
 			builtin = DefaultOperations.DIVIDE_NUMBERS;
-		else
-			return null;
-		if (parsed != null) {
-			if (parsed.operation() != builtin)
-				return null;
 		} else {
-			if (!result.isAssignableFrom(Number.class))
+			return null; // wtf
+		}
+		if (parsed != null) {
+			if (parsed.operation() != builtin) {
 				return null;
+			}
+		} else {
+			if (!result.isAssignableFrom(Number.class)) {
+				return null;
+			}
 			for (Class<?> leftType : left.possibleTypes()) {
 				for (Class<?> rightType : right.possibleTypes()) {
-					if (!NumericSlots.usesOperation(operator, leftType, rightType, builtin))
+					if (!NumericSlots.usesOperation(operator, leftType, rightType, builtin)) {
 						return null;
+					}
 				}
 			}
 		}
@@ -138,10 +151,11 @@ sealed interface NumericExpression {
 	record Constant(Number value) implements NumericExpression {
 		@Override
 		public void emit(Emitter emitter, Map<String, Slot> slots, int iteration, Label overflow) {
-			if (kind() == DECIMAL)
+			if (kind() == DECIMAL) {
 				emitter.method().visitLdcInsn(value.doubleValue());
-			else
+			} else {
 				emitter.method().visitLdcInsn(value.longValue());
+			}
 		}
 
 		@Override
@@ -202,8 +216,7 @@ sealed interface NumericExpression {
 			method.visitVarInsn(kind.loadOpcode(), leftLocal);
 			method.visitVarInsn(kind.loadOpcode(), rightLocal);
 			method.visitInsn(kind.type.getOpcode(opcode));
-			if (kind == DECIMAL)
-				return;
+			if (kind == DECIMAL) return;
 			int result = emitter.newLocal(Type.LONG_TYPE);
 			method.visitVarInsn(LSTORE, result);
 			if (operator == Operator.MULTIPLICATION) {
@@ -222,10 +235,11 @@ sealed interface NumericExpression {
 		}
 
 		private static void emitOperand(NumericExpression value, Emitter emitter, Map<String, Slot> slots,
-				int iteration, Label overflow, NumericKind kind) {
+										int iteration, Label overflow, NumericKind kind) {
 			value.emit(emitter, slots, iteration, overflow);
-			if (value.kind() != kind)
+			if (value.kind() != kind) {
 				emitter.method().visitInsn(L2D);
+			}
 		}
 
 		@Override

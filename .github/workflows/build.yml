@@ -1,0 +1,37 @@
+name: Build Skript JAR
+
+on:
+    push:
+        branches:
+            - master
+            - 'dev/**'
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  submodules: recursive
+                  persist-credentials: false
+
+            - uses: actions/setup-java@v5
+              with:
+                  distribution: temurin
+                  java-version: '25'
+                  cache: gradle
+
+            - name: Build Skript JAR
+              run: ./gradlew --no-daemon githubRelease
+
+            - name: Upload Skript JAR
+              uses: actions/upload-artifact@v7
+              with:
+                  name: skript-jit
+                  path: build/libs/Skript-*.jar
+                  if-no-files-found: error

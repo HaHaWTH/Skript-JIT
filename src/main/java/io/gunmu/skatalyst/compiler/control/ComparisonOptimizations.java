@@ -30,14 +30,17 @@ public final class ComparisonOptimizations {
 	private static final String COMPARE = Type.getInternalName(CondCompare.class);
 	private static final String READ_VALUE = Type.getMethodDescriptor(OBJECT, EVENT);
 
-	private ComparisonOptimizations() {}
+	private ComparisonOptimizations() {
+	}
 
 	static @Nullable Comparison plan(@Nullable CondCompare condition) {
-		if (condition == null)
+		if (condition == null) {
 			return null;
+		}
 		CondCompare.BinaryComparison binary = condition.skatalystComparison();
-		if (binary == null)
+		if (binary == null) {
 			return null;
+		}
 		Operand first = operand(binary.first());
 		Operand second = operand(binary.second());
 		if (first == null || second == null)
@@ -46,8 +49,9 @@ public final class ComparisonOptimizations {
 		boolean dynamic = binary.comparator() == null;
 		boolean longs = usesLongComparator(binary);
 		boolean doubles = dynamic && usesNumberComparator(Double.class);
-		if (!longs && !doubles)
+		if (!longs && !doubles) {
 			return null;
+		}
 		return new Comparison(condition, first, second, binary.relation(), condition.isNegated(), fixedNumber, longs, doubles);
 	}
 
@@ -61,7 +65,9 @@ public final class ComparisonOptimizations {
 			|| binary.comparator() == null && usesNumberComparator(Long.class);
 	}
 
-	/** Branches on two primitive longs using the built-in comparator's wrapping subtraction. */
+	/**
+	 * Branches on two primitive longs using the built-in comparator's wrapping subtraction
+	 */
 	public static void jumpIfLongRelation(MethodVisitor method, Relation relation, Label target) {
 		method.visitInsn(LSUB);
 		method.visitInsn(LCONST_0);
@@ -79,8 +85,9 @@ public final class ComparisonOptimizations {
 	private static @Nullable Operand operand(Expression<?> expression) {
 		if (expression.getClass() == SimpleLiteral.class) {
 			Object[] values = ((SimpleLiteral<?>) expression).getAll();
-			if (values.length == 1 && values[0] instanceof Number number)
+			if (values.length == 1 && values[0] instanceof Number number) {
 				return emitter -> emitter.loadConstant(number, Object.class);
+			}
 		} else if (expression.getClass() == Variable.class && !((Variable<?>) expression).isList()) {
 			return emitter -> {
 				emitter.loadConstant(expression, Variable.class);

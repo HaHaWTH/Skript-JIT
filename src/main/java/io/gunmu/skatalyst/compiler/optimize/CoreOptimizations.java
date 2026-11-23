@@ -28,7 +28,8 @@ import static org.objectweb.asm.Opcodes.INVOKESTATIC;
 @ApiStatus.Internal
 public final class CoreOptimizations {
 
-	private CoreOptimizations() { }
+	private CoreOptimizations() {
+	}
 
 	public static Map<TriggerItem, BytecodeCompiler.Optimization> plan(TriggerSection trigger) {
 		Map<TriggerItem, BytecodeCompiler.Optimization> result = new IdentityHashMap<>();
@@ -43,28 +44,31 @@ public final class CoreOptimizations {
 			BytecodeCompiler.Optimization optimization = null;
 			if (item.getClass() == SecLoop.class) {
 				optimization = NumericLoopOptimization.plan((SecLoop) item);
-				if (optimization == null)
+				if (optimization == null) {
 					optimization = CollectionLoopOptimization.plan((SecLoop) item);
+				}
 			} else if (item.getClass() == SecWhile.class) {
 				optimization = NumericLoopOptimization.plan((SecWhile) item);
 			} else if (item.getClass() == EffChange.class) {
 				optimization = StringConcatenationOptimization.plan((EffChange) item);
 			}
-			if (optimization != null)
+			if (optimization != null) {
 				result.put(item, optimization);
-			if (item instanceof TriggerSection child)
+			}
+			if (item instanceof TriggerSection child) {
 				collect(child, result);
+			}
 		}
 	}
 
 	static @Nullable String scalarLocal(Expression<?> expression) {
-		if (expression.getClass() != Variable.class)
-			return null;
+		if (expression.getClass() != Variable.class) return null;
 		Variable<?> variable = (Variable<?>) expression;
-		if (!variable.isLocal() || variable.isList() || !variable.getName().isSimple())
+		if (!variable.isLocal() || variable.isList() || !variable.getName().isSimple()) {
 			return null;
+		}
 		String name = variable.getName().toString(null);
-		// A slot has the same identity under either variable casing mode.
+		// A slot has the same identity under either variable casing mode
 		return !name.contains(Variable.SEPARATOR) && name.equals(name.toLowerCase(Locale.ENGLISH)) ? name : null;
 	}
 

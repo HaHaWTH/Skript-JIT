@@ -20,14 +20,14 @@ import static io.gunmu.skatalyst.compiler.optimize.NumericRegion.ITEM;
 import static org.objectweb.asm.Opcodes.*;
 
 final class ScalarArithmeticOptimization {
-	private ScalarArithmeticOptimization() {}
+	private ScalarArithmeticOptimization() {
+	}
 
 	static void collect(List<TriggerItem> items, Map<TriggerItem, BytecodeCompiler.Optimization> result) {
 		int start = 0;
 		while (start < items.size()) {
 			int end = start;
-			while (end < items.size() && end - start < NumericRegion.MAX_NODES && candidate(items.get(end)))
-				end++;
+			while (end < items.size() && end - start < NumericRegion.MAX_NODES && candidate(items.get(end))) end++;
 			// Retain the longest prefix compatible with one set of primitive slots.
 			while (end > start) {
 				List<TriggerItem> changes = items.subList(start, end);
@@ -54,11 +54,13 @@ final class ScalarArithmeticOptimization {
 	}
 
 	private static boolean candidate(TriggerItem item) {
-		if (item.getClass() != EffChange.class || item.skatalystExposesLocals())
+		if (item.getClass() != EffChange.class || item.skatalystExposesLocals()) {
 			return false;
+		}
 		var change = ((EffChange) item).skatalystChange();
-		if (CoreOptimizations.scalarLocal(change.target()) == null || change.source() == null)
+		if (CoreOptimizations.scalarLocal(change.target()) == null || change.source() == null) {
 			return false;
+		}
 		return switch (change.mode()) {
 			case SET, ADD, REMOVE -> change.source().getClass() == ExprArithmetic.class
 				|| NumericSlots.literal(change.source()) != null || CoreOptimizations.scalarLocal(change.source()) != null;
@@ -75,15 +77,12 @@ final class ScalarArithmeticOptimization {
 	}
 
 	private static @Nullable CondCompare comparison(@Nullable TriggerItem following) {
-		if (following == null || following.skatalystExposesLocals())
-			return null;
-		if (following.getClass() == CondCompare.class)
-			return (CondCompare) following;
+		if (following == null || following.skatalystExposesLocals()) return null;
+		if (following.getClass() == CondCompare.class) return (CondCompare) following;
 		return following.getClass() == SecConditional.class ? ((SecConditional) following).skatalystSimpleIfComparison() : null;
 	}
 
-	private static BytecodeCompiler.Optimization plan(TriggerItem first, TriggerItem last,
-			List<NumericRegion> plans, @Nullable TriggerItem comparison) {
+	private static BytecodeCompiler.Optimization plan(TriggerItem first, TriggerItem last, List<NumericRegion> plans, @Nullable TriggerItem comparison) {
 		return emitter -> {
 			MethodVisitor method = emitter.method();
 			Label miss = new Label();

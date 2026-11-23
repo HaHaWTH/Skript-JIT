@@ -35,7 +35,7 @@ import static org.objectweb.asm.Opcodes.*;
 @ApiStatus.Internal
 public final class ReferenceSlotOptimization {
 
-	// Each region adds a guard/load per live input plus a spill per overwritten local to its chunk.
+	// evry region adds a guard/load per live input plus a spill per overwritten local to its chunk
 	private static final int MAX_REGION_ITEMS = 16;
 	private static final Type OBJECT_TYPE = Type.getType(Object.class);
 	private static final String OWNER = Type.getInternalName(ReferenceSlotOptimization.class);
@@ -45,7 +45,8 @@ public final class ReferenceSlotOptimization {
 	private static final String STRING = Type.getDescriptor(String.class);
 	private static final String LIST = Type.getDescriptor(List.class);
 
-	private ReferenceSlotOptimization() { }
+	private ReferenceSlotOptimization() {
+	}
 
 	static void collect(List<TriggerItem> items, Map<TriggerItem, BytecodeCompiler.Optimization> result) {
 		List<Assignment> region = new ArrayList<>();
@@ -55,39 +56,46 @@ public final class ReferenceSlotOptimization {
 				planRegion(region, result);
 				region.clear();
 			}
-			if (assignment != null)
+			if (assignment != null) {
 				region.add(assignment);
+			}
 		}
 		planRegion(region, result);
 	}
 
 	private static @Nullable Assignment assignment(TriggerItem item) {
-		if (item.getClass() != EffChange.class)
+		if (item.getClass() != EffChange.class) {
 			return null;
+		}
 		var change = ((EffChange) item).skatalystChange();
-		if (change.mode() != ChangeMode.SET || change.source() == null)
+		if (change.mode() != ChangeMode.SET || change.source() == null) {
 			return null;
+		}
 		String target = CoreOptimizations.scalarLocal(change.target());
-		if (target == null)
+		if (target == null) {
 			return null;
+		}
 		String input = CoreOptimizations.scalarLocal(change.source());
-		if (input != null)
+		if (input != null) {
 			return new Assignment(item, target, new Reference(input, (Variable<?>) change.source()));
+		}
 		Object literal = literal(change.source());
 		return literal != null ? new Assignment(item, target, new Constant(literal)) : null;
 	}
 
 	private static @Nullable Object literal(Expression<?> source) {
 		if (source.getClass() != SimpleLiteral.class && source.getClass() != LiteralString.class
-				&& !(source.getClass() == SimplifiedLiteral.class && source.getSource().getClass() == LiteralString.class))
+			&& !(source.getClass() == SimplifiedLiteral.class && source.getSource().getClass() == LiteralString.class)) {
 			return null;
+		}
 		Object[] values = ((Literal<?>) source).getAll();
 		return values.length == 1 && canCopyDirectly(values[0]) ? values[0] : null;
 	}
 
 	private static void planRegion(List<Assignment> assignments, Map<TriggerItem, BytecodeCompiler.Optimization> result) {
-		if (assignments.size() < 2)
+		if (assignments.size() < 2) {
 			return;
+		}
 
 		Map<String, Origin> current = new LinkedHashMap<>();
 		Map<String, List<Variable<?>>> inputs = new LinkedHashMap<>();
@@ -102,15 +110,16 @@ public final class ReferenceSlotOptimization {
 					inputs.computeIfAbsent(input.name(), name -> new ArrayList<>()).add(reference.view());
 				} else {
 					Object constant = ((Constant) origin).value();
-					if (!reference.view().skatalystAcceptsRaw(constant.getClass()))
+					if (!reference.view().skatalystAcceptsRaw(constant.getClass())) {
 						return;
+					}
 				}
 			} else {
 				origin = (Constant) assignment.value();
 			}
 			names.add(assignment.target());
 			current.put(assignment.target(), origin);
-			// Preserve the order in which new locals were first inserted while attributing each spill to its last write.
+			// Preserve the order in which new locals were first inserted while attributing each spill to its last write
 			writes.put(assignment.target(), assignment);
 		}
 
@@ -121,7 +130,10 @@ public final class ReferenceSlotOptimization {
 		result.put(assignments.getFirst().effect(), plan);
 	}
 
-	/** Tests the original getters, beforeChange clone and serialized representation at a region's entry. */
+	/**
+	 * Tests the original getters, beforeChange clone and serialized representation at a region's entry
+	 */
+	@SuppressWarnings("unused") // for generated code
 	public static boolean acceptsInput(@Nullable Object value, List<Variable<?>> views) {
 		if (!canCopyDirectly(value))
 			return false;
@@ -134,28 +146,35 @@ public final class ReferenceSlotOptimization {
 
 	private static boolean canCopyDirectly(@Nullable Object value) {
 		if (value == null || value instanceof Slot || value instanceof Player
-				|| value instanceof TreeMap<?, ?> || value.getClass().isArray())
+			|| value instanceof TreeMap<?, ?> || value.getClass().isArray()) {
 			return false;
+		}
 		ClassInfo<?> info = Classes.getSuperClassInfo(value.getClass());
 		return info.getClass() == ClassInfo.class && info.getCloner() == null && info.getSerializeAs() == null;
 	}
 
-	private sealed interface Operand permits Constant, Reference { }
+	private sealed interface Operand permits Constant, Reference {
+	}
 
-	private sealed interface Origin permits Constant, Input { }
+	private sealed interface Origin permits Constant, Input {
+	}
 
-	private record Constant(Object value) implements Operand, Origin { }
+	private record Constant(Object value) implements Operand, Origin {
+	}
 
-	private record Reference(String name, Variable<?> view) implements Operand { }
+	private record Reference(String name, Variable<?> view) implements Operand {
+	}
 
-	private record Input(String name) implements Origin { }
+	private record Input(String name) implements Origin {
+	}
 
-	private record Assignment(TriggerItem effect, String target, Operand value) { }
+	private record Assignment(TriggerItem effect, String target, Operand value) {
+	}
 
-	private record LiveInput(String name, List<Variable<?>> views) { }
+	private record LiveInput(String name, List<Variable<?>> views) {
+	}
 
-	private record Region(List<Assignment> assignments, List<LiveInput> inputs, List<String> names, List<Assignment> writes)
-			implements BytecodeCompiler.Optimization {
+	private record Region(List<Assignment> assignments, List<LiveInput> inputs, List<String> names, List<Assignment> writes) implements BytecodeCompiler.Optimization {
 		@Override
 		public void emit(BytecodeCompiler.Emitter emitter) {
 			MethodVisitor method = emitter.method();

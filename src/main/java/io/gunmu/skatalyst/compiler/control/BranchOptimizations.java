@@ -27,7 +27,8 @@ public final class BranchOptimizations {
 	private static final Type EVENT = Type.getType(Event.class);
 	private static final Type ITEM = Type.getType(TriggerItem.class);
 
-	private BranchOptimizations() {}
+	private BranchOptimizations() {
+	}
 
 	public static Map<TriggerItem, BytecodeCompiler.Optimization> plan(TriggerSection trigger) {
 		Map<TriggerItem, BytecodeCompiler.Optimization> plans = new IdentityHashMap<>();
@@ -38,10 +39,12 @@ public final class BranchOptimizations {
 	private static void collect(TriggerSection section, Map<TriggerItem, BytecodeCompiler.Optimization> plans) {
 		for (TriggerItem node : section.skatalystItems()) {
 			BytecodeCompiler.Optimization optimization = planNode(node);
-			if (optimization != null)
+			if (optimization != null) {
 				plans.put(node, optimization);
-			if (node instanceof TriggerSection child)
+			}
+			if (node instanceof TriggerSection child) {
 				collect(child, plans);
+			}
 		}
 	}
 
@@ -59,10 +62,12 @@ public final class BranchOptimizations {
 			var comparison = ComparisonOptimizations.plan((CondCompare) node);
 			return comparison == null ? null : emitter -> emitConditionStatement(emitter, (CondCompare) node, comparison);
 		}
-		if (type == EffReturn.class)
+		if (type == EffReturn.class) {
 			return emitter -> invokeWithEvent(emitter, node, "skatalystReturn", ITEM);
-		if (type == EffExit.class)
+		}
+		if (type == EffExit.class) {
 			return emitter -> invokeWithEvent(emitter, node, "skatalystExit", ITEM);
+		}
 		if (type == EffContinue.class) {
 			LoopSection loop = ((EffContinue) node).skatalystLoop();
 			return emitter -> {
@@ -73,8 +78,7 @@ public final class BranchOptimizations {
 		return null;
 	}
 
-	private static void emitConditional(BytecodeCompiler.Emitter emitter, TriggerItem node,
-			@Nullable ComparisonOptimizations.Comparison comparison) {
+	private static void emitConditional(BytecodeCompiler.Emitter emitter, TriggerItem node, @Nullable ComparisonOptimizations.Comparison comparison) {
 		Label skip = new Label();
 		Label done = new Label();
 		if (comparison == null) {
@@ -92,8 +96,7 @@ public final class BranchOptimizations {
 		emitter.method().visitLabel(done);
 	}
 
-	private static void emitWhile(BytecodeCompiler.Emitter emitter, TriggerItem node,
-			@Nullable ComparisonOptimizations.Comparison comparison) {
+	private static void emitWhile(BytecodeCompiler.Emitter emitter, TriggerItem node, @Nullable ComparisonOptimizations.Comparison comparison) {
 		Label enter = new Label();
 		Label exit = new Label();
 		Label done = new Label();
@@ -113,8 +116,7 @@ public final class BranchOptimizations {
 		emitter.method().visitLabel(done);
 	}
 
-	private static void emitConditionStatement(BytecodeCompiler.Emitter emitter, CondCompare node,
-			ComparisonOptimizations.Comparison comparison) {
+	private static void emitConditionStatement(BytecodeCompiler.Emitter emitter, CondCompare node, ComparisonOptimizations.Comparison comparison) {
 		int result = emitter.newLocal(Type.BOOLEAN_TYPE);
 		comparison.emit(emitter);
 		emitter.method().visitVarInsn(ISTORE, result);

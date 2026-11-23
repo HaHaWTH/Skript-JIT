@@ -28,7 +28,9 @@ import java.util.List;
 
 import static org.objectweb.asm.Opcodes.*;
 
-/** Keeps the iterator and current value of a closed copy loop in JVM locals. */
+/**
+ * Keeps the iterator and current value of a closed copy loop in JVM locals
+ */
 final class CollectionLoopOptimization {
 
 	private static final Type EVENT = Type.getType(Event.class);
@@ -38,26 +40,31 @@ final class CollectionLoopOptimization {
 	private static final String LOOP = Type.getInternalName(SecLoop.class);
 	private static final int MAX_COPIES = 16;
 
-	private CollectionLoopOptimization() {}
+	private CollectionLoopOptimization() {
+	}
 
 	static @Nullable BytecodeCompiler.Optimization plan(SecLoop loop) {
 		Expression<?> source = loop.getLoopedExpression();
 		List<TriggerItem> items = loop.skatalystItems();
 		if (loop.skatalystExposesLocals() || items.isEmpty() || items.size() > MAX_COPIES
-				|| !(source.getClass() == ExprWorlds.class || isPlainLiteral(source)))
+			|| !(source.getClass() == ExprWorlds.class || isPlainLiteral(source))) {
 			return null;
+		}
 		List<Copy> copies = new ArrayList<>(items.size());
 		for (TriggerItem item : items) {
-			if (item.getClass() != EffChange.class || item.skatalystExposesLocals())
+			if (item.getClass() != EffChange.class || item.skatalystExposesLocals()) {
 				return null;
+			}
 			var change = ((EffChange) item).skatalystChange();
 			if (change.mode() != ChangeMode.SET || change.source() == null
-					|| change.source().getClass() != ExprLoopValue.class
-					|| !((ExprLoopValue) change.source()).skatalystIsCurrentValueOf(loop))
+				|| change.source().getClass() != ExprLoopValue.class
+				|| !((ExprLoopValue) change.source()).skatalystIsCurrentValueOf(loop)) {
 				return null;
+			}
 			String name = CoreOptimizations.scalarLocal(change.target());
-			if (name == null)
+			if (name == null) {
 				return null;
+			}
 			copies.add(new Copy(item, name));
 		}
 		return new Region(loop, source, List.copyOf(copies));
@@ -65,22 +72,25 @@ final class CollectionLoopOptimization {
 
 	private static boolean isPlainLiteral(Expression<?> expression) {
 		if (expression.getClass() == LiteralList.class || expression.getClass() == ExpressionList.class) {
-			if (!expression.getAnd())
+			if (!expression.getAnd()) {
 				return false;
+			}
 			for (Expression<?> operand : ((ExpressionList<?>) expression).getExpressions()) {
-				if (!isPlainLiteral(operand))
+				if (!isPlainLiteral(operand)) {
 					return false;
+				}
 			}
 			return true;
 		}
 		Class<?> type = expression.getReturnType();
 		return (expression.getClass() == SimpleLiteral.class || expression.getClass() == LiteralString.class
-				|| expression.getClass() == SimplifiedLiteral.class)
+			|| expression.getClass() == SimplifiedLiteral.class)
 			&& (type == String.class || type == Long.class || type == Double.class
-				|| type == Integer.class || type == Boolean.class || type == Number.class);
+			|| type == Integer.class || type == Boolean.class || type == Number.class);
 	}
 
-	private record Copy(TriggerItem item, String name) {}
+	private record Copy(TriggerItem item, String name) {
+	}
 
 	private record Region(SecLoop loop, Expression<?> source, List<Copy> copies) implements BytecodeCompiler.Optimization {
 		@Override
@@ -98,8 +108,9 @@ final class CollectionLoopOptimization {
 			method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(Skatalyst.class), "localsEscaped",
 				Type.getMethodDescriptor(Type.BOOLEAN_TYPE, EVENT), false);
 			method.visitJumpInsn(IFNE, original);
-			for (int i = 1; i < copies.size(); i++)
+			for (int i = 1; i < copies.size(); i++) {
 				CoreOptimizations.guardSuccessor(emitter, copies.get(i - 1).item(), copies.get(i).item(), original);
+			}
 			CoreOptimizations.guardSuccessor(emitter, copies.getLast().item(), loop, original);
 
 			int iterator = emitter.newLocal(ITERATOR);

@@ -28,7 +28,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
-/** Owns hotness, compilation and the transition between generated and interpreted code. */
+/**
+ * Entrypoint for Skatalyst compiler
+ */
 @ApiStatus.Internal
 public final class Skatalyst {
 
@@ -39,15 +41,14 @@ public final class Skatalyst {
 
 	private static final Object LIFECYCLE = new Object();
 	private static final Map<Scope, Set<Site>> TRACKED = new HashMap<>();
-	private static final Set<Event> ESCAPED_LOCALS =
-		Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+	private static final Set<Event> ESCAPED_LOCALS = Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 	private static @Nullable ThreadPoolExecutor worker;
 	private static volatile boolean enabled = true;
 	private static boolean caseInsensitive = true;
 
-	private Skatalyst() {}
+	private Skatalyst() {
+	}
 
-	/** One lifetime, including the pending compilation jobs, of a loaded script instance. */
 	public static final class Scope {
 		private enum Stage {
 			LOADING,
@@ -59,8 +60,7 @@ public final class Skatalyst {
 
 		public void activate() {
 			synchronized (LIFECYCLE) {
-				if (stage == Stage.LOADING)
-					stage = Stage.ACTIVE;
+				if (stage == Stage.LOADING) stage = Stage.ACTIVE;
 			}
 		}
 
@@ -68,13 +68,16 @@ public final class Skatalyst {
 			synchronized (LIFECYCLE) {
 				stage = Stage.CLOSED;
 				Set<Site> sites = TRACKED.remove(this);
-				if (sites != null)
+				if (sites != null) {
 					sites.forEach(Skatalyst::reset);
+				}
 			}
 		}
 	}
 
-	/** The runtime state associated with an individual trigger. */
+	/**
+	 * The runtime state of an individual trigger.
+	 */
 	public static final class Site {
 		private static final AtomicIntegerFieldUpdater<Site> CALLS =
 			AtomicIntegerFieldUpdater.newUpdater(Site.class, "calls");
@@ -88,7 +91,7 @@ public final class Skatalyst {
 		private volatile int calls;
 		private volatile int backedges;
 
-		// null -> queued job -> generated code or REJECTED. Lifecycle resets invalidate the job identity.
+		// null -> queued job -> generated code or REJECTED
 		private volatile @Nullable Object state;
 
 		public Site(Trigger trigger, @Nullable Scope scope) {
@@ -106,8 +109,9 @@ public final class Skatalyst {
 
 		public @Nullable DirectFunction directFunction() {
 			if (!enabled || SkriptLogger.debug() || scope == null || scope.stage != Scope.Stage.ACTIVE
-					|| trigger.getActualNext() != null)
+				|| trigger.getActualNext() != null) {
 				return null;
+			}
 			CompiledCode compiled = code();
 			return compiled == null ? null : compiled.directFunction();
 		}
@@ -132,8 +136,8 @@ public final class Skatalyst {
 
 					TriggerItem next = TriggerItem.skatalystStep(current, event);
 					if (code == null && next instanceof LoopSection loop && isBackedge(current, loop)) {
-						if (state == null && BACKEDGES.incrementAndGet(this) == BACKEDGE_THRESHOLD)
-							submit(this);
+						if (state == null
+							&& BACKEDGES.incrementAndGet(this) == BACKEDGE_THRESHOLD) submit(this);
 						code = code();
 					} else if (code != null) {
 						code = code();
@@ -150,32 +154,31 @@ public final class Skatalyst {
 	}
 
 	public static @Nullable Site enter(@Nullable TriggerItem start, Event event) {
-		if (start == null)
-			return null;
-		// An asynchronous trigger can schedule a synchronous section on this same event.
-		if (Bukkit.getServer() != null && !Bukkit.isPrimaryThread())
-			exposeLocals(event);
-		if (!enabled || SkriptLogger.debug())
-			return null;
+		if (start == null) return null;
+		// lets assume the locals may be leaked if we're not on the main thread
+		if (Bukkit.getServer() != null && !Bukkit.isPrimaryThread()) exposeLocals(event);
+		if (!enabled || SkriptLogger.debug()) return null;
 
 		Trigger trigger = start.getTrigger();
-		if (trigger == null)
-			return null;
+		if (trigger == null) return null;
 
 		Site site = trigger.skatalystSite();
 		Scope.Stage stage = site.scope == null ? Scope.Stage.LOADING : site.scope.stage;
 		Object state = site.state;
-		if (stage == Scope.Stage.CLOSED || state == REJECTED)
-			return null;
-		if (stage == Scope.Stage.LOADING)
+		if (stage == Scope.Stage.CLOSED || state == REJECTED) return null;
+		if (stage == Scope.Stage.LOADING) {
 			return state instanceof CompiledCode ? site : null;
+		}
 
-		if (state == null && Site.CALLS.incrementAndGet(site) == CALL_THRESHOLD)
+		if (state == null && Site.CALLS.incrementAndGet(site) == CALL_THRESHOLD) {
 			submit(site);
+		}
 		return site;
 	}
 
-	/** Allows future reads through the original event to observe each write. */
+	/**
+	 * Allows future reads through the original event to observe each write.
+	 */
 	public static void exposeLocals(Event event) {
 		ESCAPED_LOCALS.add(event);
 	}
@@ -206,11 +209,9 @@ public final class Skatalyst {
 	}
 
 	private static boolean isBackedge(TriggerItem previous, LoopSection loop) {
-		if (previous == loop)
-			return true;
+		if (previous == loop) return true;
 		for (TriggerSection parent = previous.getParent(); parent != null; parent = parent.getParent()) {
-			if (parent == loop)
-				return true;
+			if (parent == loop) return true;
 		}
 		return false;
 	}
@@ -223,10 +224,10 @@ public final class Skatalyst {
 			if (worker == null) {
 				worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
 					new ArrayBlockingQueue<>(QUEUE_CAPACITY), task -> {
-						Thread thread = new Thread(task, "Skatalyst compiler");
-						thread.setDaemon(true);
-						return thread;
-					});
+					Thread thread = new Thread(task, "Skatalyst compiler");
+					thread.setDaemon(true);
+					return thread;
+				});
 			}
 			Job job = claim(site);
 			try {
@@ -297,8 +298,7 @@ public final class Skatalyst {
 		}
 
 		private boolean compile(Supplier<CompiledCode> compiler) {
-			if (site.state != this)
-				return false;
+			if (site.state != this) return false;
 
 			CompiledCode code = null;
 			try {
@@ -307,8 +307,9 @@ public final class Skatalyst {
 				Skript.debug("Skatalyst compilation failed for " + site.trigger.getDebugLabel() + ": " + failure);
 			} finally {
 				synchronized (LIFECYCLE) {
-					if (site.state == this)
+					if (site.state == this) {
 						site.state = code == null || code.isEmpty() ? REJECTED : code;
+					}
 				}
 			}
 			return code != null && site.state == code;

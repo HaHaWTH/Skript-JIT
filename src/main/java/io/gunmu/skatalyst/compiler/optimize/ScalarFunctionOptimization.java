@@ -22,19 +22,22 @@ import java.util.Map;
 
 import static org.objectweb.asm.Opcodes.*;
 
-/** Compiles a pure scalar return from a script function's positional arguments. */
+/**
+ * Compiles a pure scalar return from a script function's positional arguments.
+ */
 @ApiStatus.Internal
 public final class ScalarFunctionOptimization {
 
 	private static final int MAX_OPERATIONS = 24;
 
-	private ScalarFunctionOptimization() {}
+	private ScalarFunctionOptimization() {
+	}
 
 	public static @Nullable DirectFunction compile(Trigger trigger) {
 		var signature = trigger.skatalystSite().functionSignature();
 		if (signature == null || signature.returnType() == null || signature.returnType().isArray()
-				|| trigger.skatalystItems().size() != 1 || trigger.getActualNext() != null
-				|| trigger.skatalystItems().getFirst().getClass() != EffReturn.class)
+			|| trigger.skatalystItems().size() != 1 || trigger.getActualNext() != null
+			|| trigger.skatalystItems().getFirst().getClass() != EffReturn.class)
 			return null;
 
 		EffReturn statement = (EffReturn) trigger.skatalystItems().getFirst();
@@ -60,7 +63,7 @@ public final class ScalarFunctionOptimization {
 				continue;
 			NumericExpression value = NumericExpression.parse(input, kind, null);
 			if (value == null || value.nodes() > MAX_OPERATIONS || conversion == null
-					&& value.possibleTypes().stream().anyMatch(type -> !signature.returnType().isAssignableFrom(type)))
+				&& value.possibleTypes().stream().anyMatch(type -> !signature.returnType().isAssignableFrom(type)))
 				continue;
 			Map<String, Boolean> reads = new LinkedHashMap<>();
 			value.collectNames(reads);
@@ -101,8 +104,8 @@ public final class ScalarFunctionOptimization {
 			}
 			if (variant.value() instanceof NumericExpression.Read read) {
 				method.visitVarInsn(ALOAD, names.indexOf(read.name()) + 1);
-			} else if (variant.value() instanceof NumericExpression.Constant constant) {
-				emitter.loadConstant(constant.value(), Object.class);
+			} else if (variant.value() instanceof NumericExpression.Constant(Number value)) {
+				emitter.loadConstant(value, Object.class);
 			} else {
 				variant.value().emit(emitter, slots, -1, fallback);
 				NumericKind result = variant.value().kind();
@@ -117,5 +120,6 @@ public final class ScalarFunctionOptimization {
 		method.visitInsn(ARETURN);
 	}
 
-	private record Variant(NumericKind inputKind, NumericExpression value) {}
+	private record Variant(NumericKind inputKind, NumericExpression value) {
+	}
 }

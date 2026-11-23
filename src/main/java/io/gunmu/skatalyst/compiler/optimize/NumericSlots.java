@@ -107,7 +107,7 @@ final class NumericSlots {
 	}
 
 	static void guardIntegralResult(MethodVisitor method, int left, int right, int result, Label overflow) {
-		// Both the default addition and subtraction use this promotion predicate.
+		// Both the default addition and subtraction use this promotion predicate
 		method.visitVarInsn(LLOAD, left);
 		method.visitVarInsn(LLOAD, result);
 		method.visitInsn(LXOR);
@@ -120,8 +120,7 @@ final class NumericSlots {
 		method.visitJumpInsn(IFLT, overflow);
 	}
 
-	static void emitRead(BytecodeCompiler.Emitter emitter, String name, NumericKind kind, boolean acceptsInteger,
-			Slot slot, int initial, Label miss) {
+	static void emitRead(BytecodeCompiler.Emitter emitter, String name, NumericKind kind, boolean acceptsInteger, Slot slot, int initial, Label miss) {
 		MethodVisitor method = emitter.method();
 		emitter.loadConstant(name, String.class);
 		emitter.loadEvent();

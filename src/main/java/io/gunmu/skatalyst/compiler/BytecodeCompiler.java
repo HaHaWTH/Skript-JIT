@@ -52,7 +52,8 @@ public final class BytecodeCompiler {
 		"classDataAt", Type.getMethodDescriptor(Type.getType(Object.class), Type.getType(MethodHandles.Lookup.class),
 		Type.getType(String.class), Type.getType(Class.class), Type.INT_TYPE), false);
 
-	private BytecodeCompiler() {}
+	private BytecodeCompiler() {
+	}
 
 	public static CompiledCode compile(Trigger trigger) {
 		Map<TriggerItem, Optimization> optimizations = BranchOptimizations.plan(trigger);
@@ -100,7 +101,7 @@ public final class BytecodeCompiler {
 	}
 
 	private static void collect(TriggerItem node, @Nullable TriggerItem following, @Nullable TriggerItem exit,
-			@Nullable TriggerItem ancestorExit, List<Item> items, Set<TriggerItem> visited) {
+								@Nullable TriggerItem ancestorExit, List<Item> items, Set<TriggerItem> visited) {
 		if (!visited.add(node))
 			return;
 
@@ -116,7 +117,7 @@ public final class BytecodeCompiler {
 	}
 
 	private static void installChunk(List<Item> items, MethodHandle walkHandle, Map<TriggerItem, Optimization> plans,
-			Set<TriggerItem> optimized, IdentityHashMap<TriggerItem, CompiledCode.Entry> entries) {
+									 Set<TriggerItem> optimized, IdentityHashMap<TriggerItem, CompiledCode.Entry> entries) {
 		EncodedChunk encoded = encodeChunk(items, walkHandle, plans);
 		if (encoded.length() > MAX_CODE_BYTES) {
 			if (items.size() > 1) {
@@ -134,8 +135,7 @@ public final class BytecodeCompiler {
 		}
 	}
 
-	private static EncodedChunk encodeChunk(List<Item> items, MethodHandle walkHandle,
-			Map<TriggerItem, Optimization> optimizations) {
+	private static EncodedChunk encodeChunk(List<Item> items, MethodHandle walkHandle, Map<TriggerItem, Optimization> optimizations) {
 		ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
 		writer.visit(V21, ACC_FINAL | ACC_SUPER, HIDDEN_NAME, null, "java/lang/Object",
 			new String[]{Type.getInternalName(CompiledCode.Chunk.class)});
@@ -158,7 +158,7 @@ public final class BytecodeCompiler {
 		List<TriggerItem> optimized = new ArrayList<>();
 		List<ColdExit> coldExits = new ArrayList<>();
 		method.visitCode();
-		// Only Exceptions need the failing node for Skript's reporting path.
+		// skripts only need Exceptions
 		method.visitTryCatchBlock(body, end, handler, "java/lang/Exception");
 		method.visitInsn(ACONST_NULL);
 		method.visitVarInsn(ASTORE, CURRENT);
@@ -275,7 +275,7 @@ public final class BytecodeCompiler {
 	}
 
 	private static void emitExits(Emitter emitter, Map<TriggerItem, Label> targets, Item item,
-			@Nullable TriggerItem adjacent, @Nullable TriggerItem regionExit) {
+								  @Nullable TriggerItem adjacent, @Nullable TriggerItem regionExit) {
 		if (item.firstChild() != adjacent)
 			branchTo(emitter, targets, item.firstChild());
 		if (item.following() != adjacent && item.following() != item.firstChild())
@@ -312,11 +312,14 @@ public final class BytecodeCompiler {
 		}
 	}
 
-	private record ColdExit(Label label, Item item, TriggerItem adjacent, @Nullable TriggerItem regionExit) {}
+	private record ColdExit(Label label, Item item, TriggerItem adjacent, @Nullable TriggerItem regionExit) {
+	}
 
 	@FunctionalInterface
 	public interface Optimization {
-		/** Emits a region that pushes its actual successor, or fixes its successor with {@link Emitter#finishAt}. */
+		/**
+		 * Emits a region that pushes its actual successor, or fixes its successor with {@link Emitter#finishAt}.
+		 */
 		void emit(Emitter emitter);
 	}
 
@@ -399,7 +402,9 @@ public final class BytecodeCompiler {
 				Type.getMethodDescriptor(TRIGGER_ITEM), false);
 		}
 
-		/** Loads the live successor of a compiled region ending at {@code tail}. */
+		/**
+		 * Loads the live successor of a compiled region ending at {@code tail}.
+		 */
 		public void loadRegionSuccessor(TriggerItem tail) {
 			regionTail = tail;
 			loadActualNext(tail);

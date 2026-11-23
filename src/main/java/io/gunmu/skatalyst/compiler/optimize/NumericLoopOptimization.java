@@ -18,18 +18,20 @@ import static io.gunmu.skatalyst.compiler.optimize.NumericRegion.EVENT;
 import static io.gunmu.skatalyst.compiler.optimize.NumericRegion.ITEM;
 import static org.objectweb.asm.Opcodes.*;
 
-/** The loop header owns the primitive slots until it exits or resumes an original body item. */
 final class NumericLoopOptimization {
 	private static final String WHILE = Type.getInternalName(SecWhile.class);
 	private static final String LOOP = Type.getInternalName(SecLoop.class);
 
-	private NumericLoopOptimization() {}
+	private NumericLoopOptimization() {
+	}
 
 	static @Nullable BytecodeCompiler.Optimization plan(LoopSection loop) {
-		if (loop.skatalystExposesLocals())
+		if (loop.skatalystExposesLocals()) {
 			return null;
-		if (loop instanceof SecLoop counted && counted.getLoopedExpression().getClass() != ExprTimes.class)
+		}
+		if (loop instanceof SecLoop counted && counted.getLoopedExpression().getClass() != ExprTimes.class) {
 			return null;
+		}
 		var plans = NumericRegion.plans(loop, loop.skatalystItems(), loop instanceof SecWhile w ? w.skatalystComparison() : null);
 		return plans.isEmpty() ? null : emitter -> emit(loop, plans, emitter);
 	}
@@ -116,7 +118,7 @@ final class NumericLoopOptimization {
 		}
 		method.visitLabel(miss);
 		if (loop instanceof SecLoop counted) {
-			// The times bound has already been evaluated once, including any side effects.
+			// The times bound has already been evaluated once, including any side effects
 			restoreCounted(emitter, counted, iteration, limit);
 			emitter.loadConstant(loop.skatalystItems().getFirst(), TriggerItem.class);
 			method.visitJumpInsn(GOTO, done);

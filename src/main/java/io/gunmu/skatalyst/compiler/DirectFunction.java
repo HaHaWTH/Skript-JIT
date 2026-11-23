@@ -7,7 +7,6 @@ import org.skriptlang.skript.common.function.FunctionArguments;
 
 import java.util.List;
 
-/** A fixed-arity scalar entry point. A null result requests ordinary function evaluation. */
 @ApiStatus.Internal
 public record DirectFunction(List<String> parameters, Body body, @Nullable ConvertedExpression<?, ?> conversion) {
 
@@ -25,7 +24,7 @@ public record DirectFunction(List<String> parameters, Body body, @Nullable Conve
 		return index < parameters.size() ? arguments.get(parameters.get(index)) : null;
 	}
 
-	public interface Body {
+	public interface Body { // 棍母 is using
 		@Nullable Object invoke(@Nullable Object first, @Nullable Object second, @Nullable Object third, @Nullable Object fourth);
 	}
 }
