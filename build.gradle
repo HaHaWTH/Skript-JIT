@@ -31,6 +31,7 @@ allprojects {
 
 dependencies {
 	shadow group: 'org.bstats', name: 'bstats-bukkit', version: '3.2.1'
+	shadow group: 'org.ow2.asm', name: 'asm', version: '9.9'
 
 	implementation group: 'io.papermc.paper', name: 'paper-api', version: '26.3.build.+'
 	implementation group: 'com.google.code.findbugs', name: 'findbugs', version: '3.0.1'
@@ -108,8 +109,11 @@ tasks.withType(ShadowJar).configureEach {
 	dependencies {
 		include(dependency('org.bstats:bstats-bukkit'))
 		include(dependency('org.bstats:bstats-base'))
+		include(dependency('org.ow2.asm:asm'))
 	}
 	relocate 'org.bstats', 'ch.njol.skript.bstats'
+	relocate 'org.objectweb.asm', 'io.gunmu.skatalyst.internal.asm'
+	exclude 'module-info.class'
 	manifest {
 		attributes(
 			'Name': 'ch/njol/skript',

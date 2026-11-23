@@ -48,6 +48,7 @@ public class ScriptFunction<T> extends Function<T> implements ReturnHandler<T> {
 			Functions.currentFunction = null;
 		}
 		trigger.setLineNumber(node.getLine());
+		trigger.skatalystSite().setFunctionSignature(sign);
 	}
 
 	// REMIND track possible types of local variables (including undefined variables) (consider functions, commands, and EffChange) - maybe make a general interface for this purpose
@@ -86,7 +87,19 @@ public class ScriptFunction<T> extends Function<T> implements ReturnHandler<T> {
 	}
 
 	@Override
+	@SuppressWarnings("unchecked")
 	public T execute(@NotNull FunctionEvent<?> event, @NotNull FunctionArguments arguments) {
+		var direct = trigger.skatalystSite().directFunction();
+		if (direct != null) {
+			try {
+				Object value = direct.invoke(arguments);
+				if (value != null)
+					return (T) direct.convertResult(value);
+			} catch (Throwable failure) {
+				TriggerItem.skatalystReportFailure(trigger, trigger.skatalystItems().getFirst(), failure);
+				return null;
+			}
+		}
 		Parameters parameters = getSignature().parameters();
 		FunctionEvent<?> newEvent = new FunctionEvent<>(this);
 

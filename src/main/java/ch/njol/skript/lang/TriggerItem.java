@@ -2,12 +2,17 @@ package ch.njol.skript.lang;
 
 import ch.njol.skript.Skript;
 import ch.njol.util.StringUtils;
+import io.gunmu.skatalyst.Skatalyst;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.bukkit.text.TextComponentParser;
 import org.skriptlang.skript.lang.script.Script;
 
 import java.io.File;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 
 /**
  * Represents a trigger item, i.e. a trigger section, a condition or an effect.
@@ -21,6 +26,7 @@ public abstract class TriggerItem implements Debuggable {
 
 	protected @Nullable TriggerSection parent = null;
 	private @Nullable TriggerItem next = null;
+	private boolean exposesLocals = getClass().getClassLoader() != TriggerItem.class.getClassLoader();
 
 	protected TriggerItem() {}
 
@@ -61,13 +67,52 @@ public abstract class TriggerItem implements Debuggable {
 	 * @return false if an exception occurred
 	 */
 	public static boolean walk(TriggerItem start, Event event) {
+		Skatalyst.Site site = Skatalyst.enter(start, event);
+		if (site != null)
+			return site.walk(start, event);
+
 		TriggerItem triggerItem = start;
 		try {
 			while (triggerItem != null)
-				triggerItem = triggerItem.walk(event);
+				triggerItem = skatalystStep(triggerItem, event);
 
 			return true;
-		} catch (StackOverflowError err) {
+		} catch (Throwable failure) {
+			return skatalystReportFailure(start, triggerItem, failure);
+		}
+	}
+
+	/** Supplies the protected, dynamically dispatched one-step entry to the compiler. */
+	@ApiStatus.Internal
+	public static MethodHandle skatalystWalkHandle() {
+		try {
+			return MethodHandles.lookup().findVirtual(TriggerItem.class, "walk",
+				MethodType.methodType(TriggerItem.class, Event.class));
+		} catch (NoSuchMethodException | IllegalAccessException ex) {
+			throw new ExceptionInInitializerError(ex);
+		}
+	}
+
+	@ApiStatus.Internal
+	public static @Nullable TriggerItem skatalystStep(TriggerItem item, Event event) {
+		if (item.exposesLocals)
+			Skatalyst.exposeLocals(event);
+		return item.walk(event);
+	}
+
+	@ApiStatus.Internal
+	public final void skatalystMarkExternalSyntax() {
+		exposesLocals = true;
+	}
+
+	@ApiStatus.Internal
+	public final boolean skatalystExposesLocals() {
+		return exposesLocals;
+	}
+
+	@ApiStatus.Internal
+	public static boolean skatalystReportFailure(TriggerItem start, TriggerItem item, Throwable failure) {
+		if (failure instanceof StackOverflowError err) {
 			Trigger trigger = start.getTrigger();
 			String scriptName = "<unknown>";
 			if (trigger != null) {
@@ -81,15 +126,19 @@ public abstract class TriggerItem implements Debuggable {
 			Skript.adminBroadcast("<red>The script '<gold>" + scriptName + "<red>' infinitely (or excessively) repeated itself!");
 			if (Skript.debug())
 				err.printStackTrace();
-		} catch (Exception ex) {
+		} else if (failure instanceof Exception ex) {
 			if (ex.getStackTrace().length != 0) // empty exceptions have already been printed
-				Skript.exception(ex, triggerItem);
-		} catch (Throwable throwable) {
-			// not all Throwables are Exceptions, but we usually don't want to catch them (without rethrowing)
+				Skript.exception(ex, item);
+		} else {
 			Skript.markErrored();
-			throw throwable;
+			return rethrow(failure);
 		}
 		return false;
+	}
+
+	@SuppressWarnings("unchecked")
+	private static <T extends Throwable> boolean rethrow(Throwable failure) throws T {
+		throw (T) failure;
 	}
 
 	/**

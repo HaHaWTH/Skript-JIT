@@ -42,6 +42,7 @@ import ch.njol.util.coll.iterator.CheckedIterator;
 import ch.njol.util.coll.iterator.EnumerationIterable;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import io.gunmu.skatalyst.Skatalyst;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.*;
 import org.bukkit.command.CommandSender;
@@ -871,7 +872,7 @@ public final class Skript extends JavaPlugin implements Listener {
 					// Search for all test classes
 					Set<Class<?>> classes = new HashSet<>();
 					ClassLoader.builder()
-						.addSubPackages("org.skriptlang.skript", "ch.njol.skript")
+						.addSubPackages("org.skriptlang.skript", "ch.njol.skript", "io.gunmu.skatalyst")
 						.filter(fqn -> fqn.endsWith("Test"))
 						.initialize(true)
 						.deep(true)
@@ -1273,6 +1274,7 @@ public final class Skript extends JavaPlugin implements Listener {
 		if (disabled)
 			return;
 		disabled = true;
+		Skatalyst.shutdown();
 
 		if (!partDisabled) {
 			beforeDisable();

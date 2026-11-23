@@ -42,6 +42,26 @@ public final class ParserInstance implements Experimented {
 	}
 
 	private boolean isActive = false;
+	private boolean skatalystExternalSyntax;
+
+	/** Restores the observation of the enclosing statement after parsing a nested statement. */
+	@ApiStatus.Internal
+	public boolean skatalystSwapExternalSyntax(boolean externalSyntax) {
+		boolean previous = skatalystExternalSyntax;
+		skatalystExternalSyntax = externalSyntax;
+		return previous;
+	}
+
+	@ApiStatus.Internal
+	public boolean skatalystExternalSyntax() {
+		return skatalystExternalSyntax;
+	}
+
+	@ApiStatus.Internal
+	public void skatalystObserveSyntax(Class<?> implementation) {
+		if (implementation.getClassLoader() != ParserInstance.class.getClassLoader())
+			skatalystExternalSyntax = true;
+	}
 
 	/**
 	 * Internal method for updating a ParserInstance's {@link #isActive()} status!

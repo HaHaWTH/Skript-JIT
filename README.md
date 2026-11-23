@@ -2,14 +2,14 @@
 
 ---
 
-# Skript
-**Skript** is a Minecraft plugin for Paper, which allows server owners and other people
-to modify their servers without learning Java. It can also be useful if you
-*do* know Java; some tasks are quicker to do with Skript, and so it can be used
-for prototyping etc.
+## Skript JIT
 
-This Github fork of Skript is based on Mirreski's improvements which was built
-on Njol's original Skript.
+Skript JIT adds Skatalyst, a JIT compiler that turns hot Skript triggers into JVM bytecode.
+
+Optimizes control flow, numeric loops, local variable access, and string concat.
+
+Skatalyst is enabled by default. Set `enable Skatalyst JIT compiler: false` in
+`plugins/Skript/config.sk` to disable.
 
 ## Requirements
 Skript requires **Paper** to work. You heard it right, **Spigot** does *not* work.

@@ -3,6 +3,7 @@ package ch.njol.skript.expressions.arithmetic;
 import ch.njol.skript.lang.Expression;
 import ch.njol.skript.util.Utils;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.arithmetic.Arithmetics;
 import org.skriptlang.skript.lang.arithmetic.Operation;
@@ -111,6 +112,16 @@ public class ArithmeticChain<L, R, T> implements ArithmeticGettable<T> {
 	public Class<? extends T> getReturnType() {
 		return returnType;
 	}
+
+	/** @return The operands and selected operation used by the interpreter. */
+	@ApiStatus.Internal
+	public SkatalystOperation skatalystOperation() {
+		return new SkatalystOperation(left, right, operator, operationInfo);
+	}
+
+	@ApiStatus.Internal
+	public record SkatalystOperation(ArithmeticGettable<?> left, ArithmeticGettable<?> right,
+			Operator operator, @Nullable OperationInfo<?, ?, ?> operationInfo) { }
 
 	/**
 	 * Initializes the {@code operatorGroups}.

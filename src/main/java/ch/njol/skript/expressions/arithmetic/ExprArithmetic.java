@@ -21,6 +21,7 @@ import ch.njol.skript.util.Patterns;
 import ch.njol.util.Kleenean;
 import com.google.common.collect.ImmutableSet;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.arithmetic.Arithmetics;
 import org.skriptlang.skript.lang.arithmetic.OperationInfo;
@@ -306,6 +307,12 @@ public class ExprArithmetic<L, R, T> extends SimpleExpression<T> {
 		T[] one = (T[]) Array.newInstance(result == null ? returnType : result.getClass(), 1);
 		one[0] = result;
 		return one;
+	}
+
+	/** @return The parsed arithmetic tree, including resolved precedence. */
+	@ApiStatus.Internal
+	public ArithmeticGettable<? extends T> skatalystArithmetic() {
+		return arithmeticGettable;
 	}
 
 	private boolean error(Class<?> firstClass, Class<?> secondClass) {

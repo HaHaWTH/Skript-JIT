@@ -12,6 +12,7 @@ import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.skript.sections.SecConditional;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnknownNullability;
 
@@ -95,6 +96,16 @@ public class EffExit extends Effect {
 
 	@Override
 	protected @Nullable TriggerItem walk(Event event) {
+		return skatalystExit(event);
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable TriggerSection skatalystTarget() {
+		return outerSection;
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable TriggerItem skatalystExit(Event event) {
 		debug(event, false);
 		for (SectionExitHandler section : sectionsToExit)
 			section.exit(event);

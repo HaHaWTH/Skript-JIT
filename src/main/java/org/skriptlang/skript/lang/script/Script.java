@@ -2,6 +2,7 @@ package org.skriptlang.skript.lang.script;
 
 import ch.njol.skript.config.Config;
 import ch.njol.skript.lang.util.common.AnyNamed;
+import io.gunmu.skatalyst.Skatalyst;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -25,6 +26,7 @@ public final class Script implements Validated, AnyNamed {
 	private final Config config;
 
 	private final List<Structure> structures;
+	private final Skatalyst.Scope skatalystScope = new Skatalyst.Scope();
 
 	/**
 	 * Creates a new Script to be used across the API.
@@ -36,6 +38,11 @@ public final class Script implements Validated, AnyNamed {
 	public Script(Config config, List<Structure> structures) {
 		this.config = config;
 		this.structures = structures;
+	}
+
+	@ApiStatus.Internal
+	public Skatalyst.Scope skatalystScope() {
+		return skatalystScope;
 	}
 
 	/**
@@ -185,6 +192,7 @@ public final class Script implements Validated, AnyNamed {
 	 */
 	@Override
 	public void invalidate() {
+		skatalystScope.close();
 		this.config.invalidate();
 	}
 

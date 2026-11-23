@@ -1,6 +1,7 @@
 package ch.njol.skript.sections;
 
 import ch.njol.skript.Skript;
+import ch.njol.skript.conditions.CondCompare;
 import ch.njol.skript.config.SectionNode;
 import ch.njol.skript.doc.Description;
 import ch.njol.skript.doc.Example;
@@ -10,6 +11,7 @@ import ch.njol.skript.lang.*;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
@@ -75,14 +77,51 @@ public class SecWhile extends LoopSection {
 	@Nullable
 	@Override
 	protected TriggerItem walk(Event event) {
-		if ((doWhile && ranDoWhile.add(event)) || condition.check(event)) {
-			currentLoopCounter.put(event, (currentLoopCounter.getOrDefault(event, 0L)) + 1);
-			return walk(event, true);
-		} else {
-			exit(event);
-			debug(event, false);
-			return actualNext;
-		}
+		return skatalystCondition(event) ? skatalystEnterLoop(event) : skatalystLeaveLoop(event);
+	}
+
+	@ApiStatus.Internal
+	public final boolean skatalystCondition(Event event) {
+		return skatalystFirstIteration(event) || condition.check(event);
+	}
+
+	@ApiStatus.Internal
+	public final boolean skatalystFirstIteration(Event event) {
+		return doWhile && ranDoWhile.add(event);
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable CondCompare skatalystComparison() {
+		return condition.getClass() == CondCompare.class ? (CondCompare) condition : null;
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable TriggerItem skatalystEnterLoop(Event event) {
+		skatalystAdvanceIterations(event, 1);
+		return walk(event, true);
+	}
+
+	/** Restores iterations entered in primitive slots on top of the event's existing loop state. */
+	@ApiStatus.Internal
+	public final void skatalystAdvanceIterations(Event event, long entered) {
+		currentLoopCounter.put(event, currentLoopCounter.getOrDefault(event, 0L) + entered);
+	}
+
+	@ApiStatus.Internal
+	public final long skatalystCompletedIterations(Event event) {
+		return currentLoopCounter.getOrDefault(event, 0L);
+	}
+
+	@ApiStatus.Internal
+	public final void skatalystRestoreIterations(Event event, long iteration) {
+		currentLoopCounter.put(event, iteration);
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable TriggerItem skatalystLeaveLoop(Event event) {
+		exit(event);
+		debug(event, false);
+		return actualNext;
 	}
 
 	@Override

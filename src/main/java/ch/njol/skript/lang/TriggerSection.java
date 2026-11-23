@@ -4,6 +4,7 @@ import ch.njol.skript.ScriptLoader;
 import ch.njol.skript.config.SectionNode;
 import ch.njol.skript.lang.parser.ParserInstance;
 import org.bukkit.event.Event;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -15,6 +16,7 @@ import java.util.List;
 public abstract class TriggerSection extends TriggerItem {
 
 	protected @Nullable TriggerItem first, last;
+	private List<TriggerItem> lexicalItems = List.of();
 
 	/**
 	 * Reserved for new Trigger(...)
@@ -54,6 +56,7 @@ public abstract class TriggerSection extends TriggerItem {
 	 */
 	protected void setTriggerItems(List<TriggerItem> items) {
 		if (!items.isEmpty()) {
+			lexicalItems = List.copyOf(items);
 			first = items.get(0);
 			last = items.get(items.size() - 1);
 			last.setNext(getNext());
@@ -62,6 +65,12 @@ public abstract class TriggerSection extends TriggerItem {
 				item.setParent(this);
 			}
 		}
+	}
+
+	/** Returns the parsed child order, independent of runtime successor changes. */
+	@ApiStatus.Internal
+	public final List<TriggerItem> skatalystItems() {
+		return lexicalItems;
 	}
 
 	@Override

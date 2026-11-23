@@ -4,56 +4,68 @@ import ch.njol.skript.util.Date;
 import ch.njol.skript.util.Timespan;
 import ch.njol.skript.util.Utils;
 import org.bukkit.util.Vector;
+import org.jetbrains.annotations.ApiStatus;
 import org.skriptlang.skript.lang.arithmetic.Arithmetics;
+import org.skriptlang.skript.lang.arithmetic.Operation;
 import org.skriptlang.skript.lang.arithmetic.Operator;
 
 public class DefaultOperations {
 
+	/** The default numeric addition, exposed by identity for compiler operation selection. */
+	@ApiStatus.Internal
+	public static final Operation<Number, Number, Number> ADD_NUMBERS = (left, right) -> {
+		if (Utils.isInteger(left, right)) {
+			long result = left.longValue() + right.longValue();
+			// catches overflow, from Math.addExact(long, long)
+			if (((left.longValue() ^ result) & (right.longValue() ^ result)) >= 0)
+				return result;
+		}
+		return left.doubleValue() + right.doubleValue();
+	};
+
+	@ApiStatus.Internal
+	public static final Operation<Number, Number, Number> SUBTRACT_NUMBERS = (left, right) -> {
+		if (Utils.isInteger(left, right)) {
+			long result = left.longValue() - right.longValue();
+			// Retain the existing choice of result type for subtraction.
+			if (((left.longValue() ^ result) & (right.longValue() ^ result)) >= 0)
+				return result;
+		}
+		return left.doubleValue() - right.doubleValue();
+	};
+
+	@ApiStatus.Internal
+	public static final Operation<Number, Number, Number> MULTIPLY_NUMBERS = (left, right) -> {
+		if (!Utils.isInteger(left, right))
+			return left.doubleValue() * right.doubleValue();
+
+		// catch overflow, from Math.multiplyExact(long, long)
+		long longLeft = left.longValue();
+		long longRight = right.longValue();
+		long ax = Math.abs(longLeft);
+		long ay = Math.abs(longRight);
+
+		long result = left.longValue() * right.longValue();
+		if (((ax | ay) >>> 31 != 0)) {
+			// Check large operands using the divide operator, including Long.MIN_VALUE * -1.
+			if (((longRight != 0) && (result / longRight != longLeft)) ||
+					(longLeft == Long.MIN_VALUE && longRight == -1)) {
+				return left.doubleValue() * right.doubleValue();
+			}
+		}
+		return result;
+	};
+
+	@ApiStatus.Internal
+	public static final Operation<Number, Number, Number> DIVIDE_NUMBERS =
+		(left, right) -> left.doubleValue() / right.doubleValue();
+
 	static {
 		// Number - Number
-		Arithmetics.registerOperation(Operator.ADDITION, Number.class, (left, right) -> {
-			if (Utils.isInteger(left, right)) {
-				long result = left.longValue() + right.longValue();
-				// catches overflow, from Math.addExact(long, long)
-				if (((left.longValue() ^ result) & (right.longValue() ^ result)) >= 0)
-					return result;
-			}
-			return left.doubleValue() + right.doubleValue();
-		});
-		Arithmetics.registerOperation(Operator.SUBTRACTION, Number.class, (left, right) -> {
-			if (Utils.isInteger(left, right)) {
-				long result = left.longValue() - right.longValue();
-				// catches overflow, from Math.addExact(long, long)
-				if (((left.longValue() ^ result) & (right.longValue() ^ result)) >= 0)
-					return result;
-			}
-			return left.doubleValue() - right.doubleValue();
-		});
-		Arithmetics.registerOperation(Operator.MULTIPLICATION, Number.class, (left, right) -> {
-			if (!Utils.isInteger(left, right))
-				return left.doubleValue() * right.doubleValue();
-
-			// catch overflow, from Math.multiplyExact(long, long)
-			long longLeft = left.longValue();
-			long longRight = right.longValue();
-			long ax = Math.abs(longLeft);
-			long ay = Math.abs(longRight);
-
-			long result = left.longValue() * right.longValue();
-
-			if (((ax | ay) >>> 31 != 0)) {
-				// Some bits greater than 2^31 that might cause overflow
-				// Check the result using the divide operator
-				// and check for the special case of Long.MIN_VALUE * -1
-				if (((longRight != 0) && (result / longRight != longLeft)) ||
-					(longLeft == Long.MIN_VALUE && longRight == -1)) {
-					return left.doubleValue() * right.doubleValue();
-				}
-			}
-			return result;
-		});
-		Arithmetics.registerOperation(Operator.DIVISION, Number.class,
-			(left, right) -> left.doubleValue() / right.doubleValue());
+		Arithmetics.registerOperation(Operator.ADDITION, Number.class, ADD_NUMBERS);
+		Arithmetics.registerOperation(Operator.SUBTRACTION, Number.class, SUBTRACT_NUMBERS);
+		Arithmetics.registerOperation(Operator.MULTIPLICATION, Number.class, MULTIPLY_NUMBERS);
+		Arithmetics.registerOperation(Operator.DIVISION, Number.class, DIVIDE_NUMBERS);
 		Arithmetics.registerOperation(Operator.EXPONENTIATION, Number.class,
 			(left, right) -> Math.pow(left.doubleValue(), right.doubleValue()));
 		Arithmetics.registerDifference(Number.class, (left, right) -> {

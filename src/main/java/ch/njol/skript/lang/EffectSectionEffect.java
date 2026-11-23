@@ -14,6 +14,8 @@ public class EffectSectionEffect extends Effect {
 
 	public EffectSectionEffect(EffectSection effectSection) {
 		this.effectSection = effectSection;
+		if (effectSection.skatalystExposesLocals())
+			skatalystMarkExternalSyntax();
 	}
 
 	@Override
