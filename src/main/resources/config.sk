@@ -364,6 +364,15 @@ databases:
 
 
 
+# Whether Skript should cache the parsed form of scripts (its intermediate language, "IL") in the plugin
+# data directory and reuse it when the script and the parse environment have not changed. On large script
+# collections this can dramatically reduce startup time, because the expensive parsing is skipped.
+# The cache is validated against the script's content, the Skript build, installed addons, registered syntaxes
+# and relevant config options. Outdated or invalid cache files are ignored and the script is parsed normally.
+# Set this to 'false' to always parse scripts from scratch (and to stop updating the cache).
+use script parse cache: true
+
+
 # ==== Settings that should not be changed ====
 
 version: @version@

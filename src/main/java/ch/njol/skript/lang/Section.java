@@ -5,6 +5,7 @@ import ch.njol.skript.Skript;
 import ch.njol.skript.config.Node;
 import ch.njol.skript.config.SectionNode;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
+import ch.njol.skript.lang.il.IlManager;
 import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.util.Kleenean;
 import org.bukkit.event.Event;
@@ -196,8 +197,8 @@ public abstract class Section extends TriggerSection implements SyntaxElement, S
 		SectionContext sectionContext = ParserInstance.get().getData(SectionContext.class);
 		return sectionContext.modify(sectionNode, triggerItems, () -> {
 			var iterator = Skript.instance().syntaxRegistry().syntaxes(org.skriptlang.skript.registration.SyntaxRegistry.SECTION).iterator();
-			//noinspection unchecked,rawtypes
-			return (Section) SkriptParser.parse(expr, (Iterator) iterator, defaultError);
+			// noinspection unchecked,rawtypes
+			return (Section) SkriptParser.parseIl(expr, (Iterator) iterator, defaultError, IlManager.Site.SECTION);
 		});
 	}
 

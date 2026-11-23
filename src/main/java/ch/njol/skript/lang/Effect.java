@@ -3,6 +3,7 @@ package ch.njol.skript.lang;
 import ch.njol.skript.Skript;
 import ch.njol.skript.config.Node;
 import ch.njol.skript.lang.function.EffFunctionCall;
+import ch.njol.skript.lang.il.IlManager;
 import ch.njol.skript.log.ParseLogHandler;
 import ch.njol.skript.log.SkriptLogger;
 import org.bukkit.event.Event;
@@ -63,8 +64,9 @@ public abstract class Effect extends Statement implements SyntaxRuntimeErrorProd
 			log.clear();
 
 			var iterator = Skript.instance().syntaxRegistry().syntaxes(org.skriptlang.skript.registration.SyntaxRegistry.EFFECT).iterator();
-			//noinspection unchecked,rawtypes
-			Effect effect = (Effect) SkriptParser.parse(input, (Iterator) iterator, defaultError);
+			// noinspection unchecked,rawtypes
+			Effect effect = (Effect) SkriptParser.parseIl(input, (Iterator) iterator, defaultError,
+				IlManager.Site.EFFECT);
 			if (effect != null) {
 				log.printLog();
 				return effect;

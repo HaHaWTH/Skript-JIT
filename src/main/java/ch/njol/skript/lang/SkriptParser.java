@@ -17,7 +17,10 @@ import ch.njol.skript.lang.parser.ParseStackOverflowException;
 import ch.njol.skript.lang.parser.ExpressionParseCache;
 import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.skript.lang.parser.ParsingStack;
+import ch.njol.skript.lang.il.IlManager;
+import ch.njol.skript.lang.il.IlNode;
 import ch.njol.skript.lang.simplification.Simplifiable;
+import ch.njol.skript.util.StringMode;
 import ch.njol.skript.lang.util.SimpleLiteral;
 import ch.njol.skript.localization.Language;
 import ch.njol.skript.localization.Message;
@@ -41,6 +44,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.primitives.Booleans;
 import org.bukkit.event.Event;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.common.function.FunctionReferenceParser;
@@ -57,6 +61,7 @@ import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
@@ -198,6 +203,84 @@ public final class SkriptParser {
 		}
 	}
 
+	/*
+	 * IL cache integration
+	 */
+
+	/**
+	 * Parses the given string as one of the given syntax elements, using the IL cache when possible.
+	 * If no usable cache entry exists the call is recorded so that the next load can replay it.
+	 */
+	@ApiStatus.Internal
+	public static <T extends SyntaxElement> @Nullable T parseIl(String expr,
+			Iterator<? extends SyntaxInfo<? extends T>> source, @Nullable String defaultError, IlManager.Site site) {
+		return parseIl(expr, source, defaultError, site, ALL_FLAGS, ParseContext.DEFAULT);
+	}
+
+	/*
+	 * Only line-level parses are routed through the IL cache. Structure headers, entry values, function
+	 * signatures and expressions parsed from inside an init() method still take the normal path (they are either
+	 * cheap or rare); a cache entry therefore only replaces the candidate matching of a line.
+	 */
+	@SuppressWarnings("unchecked")
+	private static <T extends SyntaxElement> @Nullable T parseIl(String expr, Iterator<?> source,
+			@Nullable String defaultError, IlManager.Site site, int flags, ParseContext parseContext) {
+		String trimmed = "" + expr.trim();
+		Supplier<T> normalParse = () -> (T) parse(trimmed, (Iterator) source, defaultError);
+		expr = trimmed;
+		if (expr.isEmpty())
+			return normalParse.get();
+
+		IlManager.Frame frame = IlManager.beginSite(site, expr, flags, parseContext.ordinal());
+		if (frame == null)
+			return normalParse.get();
+
+		IlManager.Entry cached = frame.cached();
+		if (cached != null) {
+			if (cached.state() == IlManager.STATE_MISS) {
+				// ponytail: replaying a recorded miss skips the candidate inits of the failed attempts (and their
+				// side effects/log output). That is what makes the skip worth it; if a script ever depends on side
+				// effects of failed parses, disable the cache with the 'use script parse cache' option.
+				IlManager.miss();
+				IlManager.debug("replayed MISS " + frame.key());
+				try (ParseLogHandler log = SkriptLogger.startParseLogHandler()) {
+					log.printError(defaultError);
+				}
+				return null;
+			}
+			if (cached.state() == IlManager.STATE_NODE) {
+				T replayed = replay(frame, cached, expr, flags, parseContext);
+				if (replayed != null)
+					return replayed;
+			}
+		}
+
+		IlManager.startRecording(frame);
+		T result;
+		try {
+			result = normalParse.get();
+		} catch (RuntimeException | Error e) {
+			IlManager.abortSite(frame);
+			throw e;
+		}
+		IlManager.finishSite(frame, result);
+		return result;
+	}
+
+	@SuppressWarnings("unchecked")
+	private static <T extends SyntaxElement> @Nullable T replay(IlManager.Frame frame, IlManager.Entry entry,
+			String expr, int flags, ParseContext parseContext) {
+		try (ParseLogHandler log = SkriptLogger.startParseLogHandler()) {
+			SkriptParser parser = new SkriptParser(expr, flags, parseContext);
+			T element = (T) IlManager.replay(entry.node(), frame.key(), parser);
+			if (element != null) {
+				log.printLog();
+				return element;
+			}
+			return null;
+		}
+	}
+
 	private <T extends SyntaxElement> @Nullable T parse(Iterator<? extends SyntaxInfo<? extends T>> source) {
 		ParsingStack parsingStack = getParser().getParsingStack();
 		try (ParseLogHandler log = SkriptLogger.startParseLogHandler()) {
@@ -275,6 +358,7 @@ public final class SkriptParser {
 							if (element == null)
 								continue;
 						}
+						IlManager.recordElement(element, info, matchedPattern, parseResult);
 						return element;
 					}
 				}
@@ -316,6 +400,25 @@ public final class SkriptParser {
 				return null;
 			return simplified;
 		}
+	}
+
+	/**
+	 * @return the default expressions for an expression slot, used when replaying a recorded parse.
+	 */
+	@ApiStatus.Internal
+	public static List<DefaultExpression<?>> getDefaultExpressionsForIl(ExprInfo exprInfo) {
+		return getDefaultExpressions(exprInfo, "<il>");
+	}
+
+	/**
+	 * Applies the same simplification as a normal parse would, used when replaying a recorded element.
+	 */
+	@ApiStatus.Internal
+	@SuppressWarnings({"unchecked", "rawtypes"})
+	public <T extends SyntaxElement> @Nullable T simplifyForIl(T element) {
+		if (element != null && doSimplification && element instanceof Simplifiable<?> simplifiable)
+			return (T) simplify((Simplifiable) simplifiable);
+		return element;
 	}
 
 	/**
@@ -460,7 +563,10 @@ public final class SkriptParser {
 				if (!inExpression && (character == '{' || character == '}'))
 					return null;
 			}
-			return Variable.newInstance(variableName, returnTypes);
+			Variable<T> variable = Variable.newInstance(variableName, returnTypes);
+			if (variable != null)
+				IlManager.registerLeaf(variable, new IlNode.Variable(variableName, classNames(returnTypes)));
+			return variable;
 		}
 		return null;
 	}
@@ -471,7 +577,11 @@ public final class SkriptParser {
 			return null;
 		}
 		if (expr.startsWith("\"") && expr.length() != 1 && nextQuote(expr, 1) == expr.length() - 1) {
-			return VariableString.newInstance("" + expr.substring(1, expr.length() - 1));
+			String raw = "" + expr.substring(1, expr.length() - 1);
+			VariableString string = VariableString.newInstance(raw);
+			if (string != null)
+				IlManager.registerLeaf(string, new IlNode.VarString(raw, StringMode.MESSAGE.name()));
+			return string;
 		} else {
 			var iterator = new CheckedIterator<>(Skript.instance().syntaxRegistry().syntaxes(SyntaxRegistry.EXPRESSION).iterator(), info -> {
 				if (info == null || info.returnType() == Object.class)
@@ -518,7 +628,10 @@ public final class SkriptParser {
 				org.skriptlang.skript.common.function.FunctionReference<T> functionReference = parseFunctionReference();
 				if (functionReference != null) {
 					log.printLog();
-					return new ExprFunctionCall<>(functionReference, types);
+					ExprFunctionCall<T> functionCall = new ExprFunctionCall<>(functionReference, types);
+					IlManager.registerLeaf(functionCall,
+						new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+					return functionCall;
 				} else if (log.hasError()) {
 					log.printError();
 					return null;
@@ -541,6 +654,10 @@ public final class SkriptParser {
 					Expression<? extends T> convertedExpression = parsedExpression.getConvertedExpression(objTypes);
 					if (convertedExpression != null) {
 						log.printLog();
+						IlNode child = IlManager.nodeFor(parsedExpression);
+						if (child != null)
+							IlManager.registerLeaf(convertedExpression,
+								new IlNode.Converted(child, classNames(objTypes)));
 						return convertedExpression;
 					}
 					// Print errors, if we couldn't get the correct type
@@ -681,7 +798,10 @@ public final class SkriptParser {
 					}
 
 					log.printLog();
-					return new ExprFunctionCall<>(functionReference, types);
+					ExprFunctionCall<Object> functionCall = new ExprFunctionCall<>(functionReference, types);
+					IlManager.registerLeaf(functionCall,
+						new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+					return functionCall;
 				} else if (log.hasError()) {
 					log.printError();
 					return null;
@@ -724,6 +844,10 @@ public final class SkriptParser {
 					Expression<?> convertedExpression = parsedExpression.getConvertedExpression((Class<Object>[]) types);
 					if (convertedExpression != null) {
 						log.printLog();
+						IlNode child = IlManager.nodeFor(parsedExpression);
+						if (child != null)
+							IlManager.registerLeaf(convertedExpression,
+								new IlNode.Converted(child, classNames(types)));
 						return convertedExpression;
 					}
 
@@ -792,7 +916,9 @@ public final class SkriptParser {
 			T parsedObject = (T) Classes.parse(expr, type, context);
 			if (parsedObject != null) {
 				log.printLog();
-				return new SimpleLiteral<>(parsedObject, false, new UnparsedLiteral(expr));
+				SimpleLiteral<T> literal = new SimpleLiteral<>(parsedObject, false, new UnparsedLiteral(expr));
+				IlManager.registerLeaf(literal, new IlNode.Literal(expr, type.getName(), context.ordinal()));
+				return literal;
 			}
 		}
 		if (allowUnparsedLiteral && containsObjectClass)
@@ -802,7 +928,10 @@ public final class SkriptParser {
 			for (Class<?> type : types) {
 				if (!type.isAssignableFrom(String.class))
 					continue;
-				VariableString string = VariableString.newInstance(expr.substring(1, expr.length() - 1));
+				String raw = expr.substring(1, expr.length() - 1);
+				VariableString string = VariableString.newInstance(raw);
+				if (string != null)
+					IlManager.registerLeaf(string, new IlNode.VarString(raw, StringMode.MESSAGE.name()));
 				if (string instanceof LiteralString)
 					//noinspection unchecked
 					return (Expression<? extends T>) string;
@@ -830,7 +959,10 @@ public final class SkriptParser {
 		}
 		log.clear();
 		LogEntry logError = log.getError();
-		return new UnparsedLiteral(expr, logError != null && (error == null || logError.quality > error.quality) ? logError : error);
+		UnparsedLiteral literal = new UnparsedLiteral(expr,
+			logError != null && (error == null || logError.quality > error.quality) ? logError : error);
+		IlManager.registerLeaf(literal, new IlNode.Unparsed(expr));
+		return literal;
 	}
 
 	/**
@@ -867,8 +999,12 @@ public final class SkriptParser {
 		}
 		//noinspection unchecked
 		T parsedObject = (T) classInfoParser.parse(literalString, context);
-		if (parsedObject != null)
-			return new SimpleLiteral<>(parsedObject, false, new UnparsedLiteral(literalString));
+		if (parsedObject != null) {
+			SimpleLiteral<T> literal = new SimpleLiteral<>(parsedObject, false, new UnparsedLiteral(literalString));
+			IlManager.registerLeaf(literal,
+				new IlNode.SpecifiedLiteral(literalString, unparsedClassInfo, context.ordinal()));
+			return literal;
+		}
 		return null;
 	}
 
@@ -1012,7 +1148,9 @@ public final class SkriptParser {
 			}
 			if (isObject && (flags & PARSE_LITERALS) != 0) { // single expression, can return an UnparsedLiteral now
 				log.clear();
-				return new UnparsedLiteral(expr, log.getError());
+				UnparsedLiteral literal = new UnparsedLiteral(expr, log.getError());
+				IlManager.registerLeaf(literal, new IlNode.Unparsed(expr));
+				return literal;
 			}
 			log.printError();
 			return null;
@@ -1162,16 +1300,21 @@ public final class SkriptParser {
 			}
 		}
 
+		Expression<?> list;
 		if (isLiteralList) {
 			//noinspection SuspiciousToArrayCall
 			Literal<?>[] literals = parsedExpressions.toArray(new Literal[0]);
 			//noinspection unchecked, rawtypes
-			return new LiteralList(literals, superReturnType, returnTypes, !and.isFalse());
+			list = new LiteralList(literals, superReturnType, returnTypes, !and.isFalse());
 		} else {
 			Expression<?>[] expressions = parsedExpressions.toArray(new Expression[0]);
 			//noinspection unchecked, rawtypes
-			return new ExpressionList(expressions, superReturnType, returnTypes, !and.isFalse());
+			list = new ExpressionList(expressions, superReturnType, returnTypes, !and.isFalse());
 		}
+		List<IlNode> childNodes = childNodes(parsedExpressions);
+		if (childNodes != null)
+			IlManager.registerLeaf(list, new IlNode.ListExpr(childNodes, isLiteralList, !and.isFalse()));
+		return list;
 	}
 
 	/*
@@ -1666,6 +1809,24 @@ public final class SkriptParser {
 		public boolean isOptional;
 		public int flagMask = ~0;
 		public int time = 0;
+	}
+
+	private static List<@Nullable String> classNames(Class<?>[] types) {
+		List<String> names = new ArrayList<>(types.length);
+		for (Class<?> type : types)
+			names.add(type == null ? null : type.getName());
+		return names;
+	}
+
+	private static @Nullable List<IlNode> childNodes(List<Expression<?>> expressions) {
+		List<IlNode> nodes = new ArrayList<>(expressions.size());
+		for (Expression<?> expression : expressions) {
+			IlNode node = IlManager.nodeFor(expression);
+			if (node == null)
+				return null;
+			nodes.add(node);
+		}
+		return nodes;
 	}
 
 	/**

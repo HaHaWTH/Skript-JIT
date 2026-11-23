@@ -3,6 +3,7 @@ package ch.njol.skript.lang;
 import ch.njol.skript.Skript;
 import ch.njol.skript.config.SectionNode;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
+import ch.njol.skript.lang.il.IlManager;
 import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.util.Kleenean;
 import org.jetbrains.annotations.Nullable;
@@ -88,7 +89,8 @@ public abstract class EffectSection extends Section {
 				.filter(info -> EffectSection.class.isAssignableFrom(info.type()))
 				.iterator();
 			//noinspection unchecked,rawtypes
-			EffectSection parsed = (EffectSection) SkriptParser.parse(input, (Iterator) iterator, defaultError);
+			EffectSection parsed = (EffectSection) SkriptParser.parseIl(input, (Iterator) iterator, defaultError,
+				IlManager.Site.EFFECT_SECTION);
 			if (parsed != null && sectionNode != null && !sectionContext.claimed()) {
 				Skript.error("The line '" + input + "' is a valid statement but cannot function as a section (:) because there is no syntax in the line to manage it.");
 				return null;

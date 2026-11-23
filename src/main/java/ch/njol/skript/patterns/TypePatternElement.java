@@ -312,6 +312,13 @@ public class TypePatternElement extends PatternElement {
 		return stringBuilder.append("%").toString();
 	}
 
+	/**
+	 * @return the time state that expressions matched by this element must have, or 0 for no time state.
+	 */
+	public int getTime() {
+		return time;
+	}
+
 	public ExprInfo getExprInfo() {
 		ExprInfo exprInfo = new ExprInfo(classes.length);
 		for (int i = 0; i < classes.length; i++) {
