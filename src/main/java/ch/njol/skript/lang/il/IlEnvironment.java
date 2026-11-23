@@ -27,8 +27,7 @@ import java.util.stream.Collectors;
  * Cached parse results are only valid if every input that can influence parsing is the same as when they were
  * recorded: the Skript build itself, installed addons (they register syntaxes and converters), the registered
  * syntax and class registries, the active language, the server version and the config options that affect
- * parsing. The fingerprint does not need to be stable across machines - it only has to change when anything
- * relevant changes.
+ * parsing.
  */
 @ApiStatus.Internal
 public final class IlEnvironment {
