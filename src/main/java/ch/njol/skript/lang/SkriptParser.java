@@ -202,12 +202,14 @@ public final class SkriptParser {
 		ParserInstance parser = getParser();
 		ParsingStack parsingStack = parser.getParsingStack();
 		boolean externalSyntax = parser.skatalystExternalSyntax();
+		int observationMark = parser.skatalystObservationMark();
 		try (ParseLogHandler log = SkriptLogger.startParseLogHandler()) {
 			while (source.hasNext()) {
 				SyntaxInfo<? extends T> info = source.next();
 				int matchedPattern = -1; // will increment at the start of each iteration
 				patternsLoop: for (String pattern : info.patterns()) {
 					parser.skatalystSwapExternalSyntax(externalSyntax);
+					parser.skatalystRestoreObservations(observationMark);
 					matchedPattern++;
 					log.clear();
 					ParseResult parseResult;
@@ -273,13 +275,14 @@ public final class SkriptParser {
 								break;
 						}
 						log.printLog();
+						T selected = element;
 						if (doSimplification && element instanceof Simplifiable<?> simplifiable) {
 							//noinspection unchecked
 							element = (T) simplify(simplifiable);
 							if (element == null)
 								continue;
 						}
-						parser.skatalystObserveSyntax(info.type());
+						parser.skatalystObserveSyntax(info, selected, element, matchedPattern, parseResult);
 						return element;
 					}
 				}
@@ -287,6 +290,7 @@ public final class SkriptParser {
 
 			// No successful syntax elements parsed, print errors and return
 			parser.skatalystSwapExternalSyntax(externalSyntax);
+			parser.skatalystRestoreObservations(observationMark);
 			log.printError();
 			return null;
 		}

@@ -9,10 +9,14 @@ import ch.njol.skript.expressions.arithmetic.ArithmeticExpressionInfo;
 import ch.njol.skript.expressions.arithmetic.ArithmeticGettable;
 import ch.njol.skript.expressions.arithmetic.ExprArithmetic;
 import ch.njol.skript.lang.Expression;
+import ch.njol.skript.lang.KeyProviderExpression;
 import ch.njol.skript.lang.LoopSection;
 import ch.njol.skript.lang.Variable;
+import ch.njol.skript.lang.util.ConvertedExpression;
 import ch.njol.skript.registrations.Classes;
 import ch.njol.skript.sections.SecLoop;
+import io.gunmu.skatalyst.addon.ParsedBinding;
+import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler.Emitter;
 import io.gunmu.skatalyst.compiler.optimize.NumericSlots.NumericKind;
 import io.gunmu.skatalyst.compiler.optimize.NumericSlots.Slot;
@@ -24,15 +28,20 @@ import org.skriptlang.skript.lang.arithmetic.Operation;
 import org.skriptlang.skript.lang.arithmetic.OperationInfo;
 import org.skriptlang.skript.lang.arithmetic.Operator;
 
+import java.lang.invoke.MethodHandle;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 import static io.gunmu.skatalyst.compiler.optimize.NumericSlots.NumericKind.*;
 import static org.objectweb.asm.Opcodes.*;
 
 /**
- * The built-in arithmetic tree
+ * Primitive arithmetic and admitted addon calls within one numeric region.
  */
 sealed interface NumericExpression {
 
@@ -55,13 +64,23 @@ sealed interface NumericExpression {
 	default void collectNames(Map<String, Boolean> names) {
 	}
 
-	static @Nullable NumericExpression parse(Expression<?> expression, NumericKind kind, @Nullable LoopSection loop) {
-		return parse(expression, ignored -> kind, loop);
+	default void collectIntrinsics(Set<NumericCall> calls) {
 	}
 
-	static @Nullable NumericExpression parse(Expression<?> expression, Function<String, NumericKind> kinds, @Nullable LoopSection loop) {
+	static @Nullable NumericExpression parse(Expression<?> expression, Function<String, NumericKind> kinds,
+			@Nullable LoopSection loop, @Nullable ParsedBinding binding) {
+		return parse(expression, kinds, loop, binding, null);
+	}
+
+	private static @Nullable NumericExpression parse(Expression<?> expression, Function<String, NumericKind> kinds,
+			@Nullable LoopSection loop, @Nullable ParsedBinding binding, @Nullable Set<Expression<?>> activeCalls) {
+		if (expression.getClass() == ConvertedExpression.class) {
+			var conversion = (ConvertedExpression<?, ?>) expression;
+			var input = parse(conversion.skatalystInput(), kinds, loop, binding, activeCalls);
+			return input != null && input.possibleTypes().stream().allMatch(conversion::skatalystIsIdentityFor) ? input : null;
+		}
 		if (expression.getClass() == ExprArithmetic.class) {
-			return parse(((ExprArithmetic<?, ?, ?>) expression).skatalystArithmetic(), kinds, loop);
+			return parse(((ExprArithmetic<?, ?, ?>) expression).skatalystArithmetic(), kinds, loop, binding, activeCalls);
 		}
 		String name = CoreOptimizations.scalarLocal(expression);
 		if (name != null) {
@@ -78,28 +97,80 @@ sealed interface NumericExpression {
 			&& ((ExprLoopIteration) expression).skatalystIsIterationOf(loop)) {
 			return Iteration.CURRENT;
 		}
+		if (binding != null) {
+			NumericCall call = binding.numericIntrinsic(expression);
+			if (call != null) {
+				if (!expression.isSingle() || KeyProviderExpression.canReturnKeys(expression)) {
+					return null;
+				}
+				if (activeCalls == null) {
+					activeCalls = Collections.newSetFromMap(new IdentityHashMap<>());
+				}
+				if (activeCalls.size() == NumericRegion.MAX_NODES || !activeCalls.add(expression)) {
+					return null;
+				}
+				try {
+					return intrinsic(expression, call, kinds, loop, binding, activeCalls);
+				} finally {
+					activeCalls.remove(expression);
+				}
+			}
+		}
 		Number value = NumericSlots.literal(expression);
 		return value == null ? null : new Constant(value);
 	}
 
 	private static @Nullable NumericExpression parse(ArithmeticGettable<?> arithmetic, Function<String, NumericKind> kinds,
-													 @Nullable LoopSection loop) {
+			@Nullable LoopSection loop, @Nullable ParsedBinding binding, @Nullable Set<Expression<?>> activeCalls) {
 		if (arithmetic instanceof ArithmeticExpressionInfo<?> info) {
-			return parse(info.expression(), kinds, loop);
+			return parse(info.expression(), kinds, loop, binding, activeCalls);
 		}
 		if (arithmetic.getClass() != ArithmeticChain.class) return null;
 		var op = ((ArithmeticChain<?, ?, ?>) arithmetic).skatalystOperation();
-		NumericExpression left = parse(op.left(), kinds, loop);
-		NumericExpression right = parse(op.right(), kinds, loop);
+		NumericExpression left = parse(op.left(), kinds, loop, binding, activeCalls);
+		NumericExpression right = parse(op.right(), kinds, loop, binding, activeCalls);
 		return binary(op.operator(), op.operationInfo(), arithmetic.getReturnType(), left, right);
 	}
 
+	private static @Nullable NumericExpression intrinsic(Expression<?> expression, NumericCall call,
+			Function<String, NumericKind> kinds, @Nullable LoopSection loop, ParsedBinding binding,
+			Set<Expression<?>> activeCalls) {
+		var replacement = call.intrinsic();
+		if (replacement == null || !call.isActive()) {
+			return null;
+		}
+		var type = replacement.handle().type();
+		var result = type.returnType() == long.class ? INTEGRAL : DECIMAL;
+		if (!expression.getReturnType().isAssignableFrom(result.boxed)) {
+			return null;
+		}
+		List<NumericExpression> operands = new ArrayList<>(replacement.operands().size());
+		int nodes = 1;
+		for (int index = 0; index < replacement.operands().size(); index++) {
+			var operand = parse(replacement.operands().get(index), kinds, loop, binding, activeCalls);
+			var expected = type.parameterType(index) == long.class ? INTEGRAL : DECIMAL;
+			if (operand instanceof Read read) {
+				operand = new Read(read.name(), read.kind(), false);
+			}
+			if (operand == null || operand.kind() != expected || !operand.possibleTypes().equals(List.of(expected.boxed))) {
+				return null;
+			}
+			nodes += operand.nodes();
+			if (nodes > NumericRegion.MAX_NODES) {
+				return null;
+			}
+			operands.add(operand);
+		}
+		return new IntrinsicCall(call, replacement.handle(), List.copyOf(operands), result, nodes);
+	}
+
 	static @Nullable NumericExpression change(ChangeMode mode, String target, @Nullable Expression<?> source,
-											  Function<String, NumericKind> kinds, @Nullable LoopSection loop) {
+			Function<String, NumericKind> kinds, @Nullable LoopSection loop, @Nullable ParsedBinding binding) {
 		if (source == null || (mode != ChangeMode.SET && mode != ChangeMode.ADD && mode != ChangeMode.REMOVE)) {
 			return null;
 		}
-		NumericExpression value = parse(source, kinds, loop);
+		NumericExpression value = parse(source, kinds, loop, binding);
+		if (value instanceof IntrinsicCall && !IntrinsicCall.hasDefaultBeforeChange(source)) return null;
 		if (value == null || mode == ChangeMode.SET) {
 			return value;
 		}
@@ -200,6 +271,67 @@ sealed interface NumericExpression {
 		}
 	}
 
+	record IntrinsicCall(NumericCall binding, MethodHandle handle, List<NumericExpression> operands, NumericKind kind,
+			int nodes) implements NumericExpression {
+		private static final ClassValue<Boolean> DEFAULT_BEFORE_CHANGE = new ClassValue<>() {
+			@Override
+			protected Boolean computeValue(Class<?> type) {
+				try {
+					return type.getMethod("beforeChange", Expression.class, Object[].class).getDeclaringClass() == Expression.class;
+				} catch (NoSuchMethodException missingExpressionMethod) {
+					throw new AssertionError(missingExpressionMethod);
+				}
+			}
+		};
+
+		private static boolean hasDefaultBeforeChange(Expression<?> source) {
+			// EffChange dispatches the hook once on the outer RHS. An exact ConvertedExpression forwards it.
+			while (source.getClass() == ConvertedExpression.class) {
+				source = ((ConvertedExpression<?, ?>) source).skatalystInput();
+			}
+			return DEFAULT_BEFORE_CHANGE.get(source.getClass());
+		}
+
+		@Override
+		public void emit(Emitter emitter, Map<String, Slot> slots, int iteration, Label overflow) {
+			MethodVisitor method = emitter.method();
+			int[] arguments = new int[operands.size()];
+			for (int index = 0; index < operands.size(); index++) {
+				NumericExpression operand = operands.get(index);
+				arguments[index] = emitter.newLocal(operand.kind().type);
+				operand.emit(emitter, slots, iteration, overflow);
+				method.visitVarInsn(operand.kind().storeOpcode(), arguments[index]);
+			}
+			// An operand may side-exit, so the invocation stack must still be empty while evaluating it.
+			emitter.loadConstant(handle, MethodHandle.class);
+			for (int index = 0; index < operands.size(); index++) {
+				method.visitVarInsn(operands.get(index).kind().loadOpcode(), arguments[index]);
+			}
+			method.visitMethodInsn(INVOKEVIRTUAL, Type.getInternalName(MethodHandle.class), "invokeExact",
+				handle.type().toMethodDescriptorString(), false);
+		}
+
+		@Override
+		public boolean needsExit() {
+			return operands.stream().anyMatch(NumericExpression::needsExit);
+		}
+
+		@Override
+		public void collectNames(Map<String, Boolean> names) {
+			for (NumericExpression operand : operands) {
+				operand.collectNames(names);
+			}
+		}
+
+		@Override
+		public void collectIntrinsics(Set<NumericCall> calls) {
+			calls.add(binding);
+			for (NumericExpression operand : operands) {
+				operand.collectIntrinsics(calls);
+			}
+		}
+	}
+
 	record Binary(Operator operator, NumericExpression left, NumericExpression right) implements NumericExpression {
 		@Override
 		public void emit(Emitter emitter, Map<String, Slot> slots, int iteration, Label overflow) {
@@ -256,6 +388,12 @@ sealed interface NumericExpression {
 		public void collectNames(Map<String, Boolean> names) {
 			left.collectNames(names);
 			right.collectNames(names);
+		}
+
+		@Override
+		public void collectIntrinsics(Set<NumericCall> calls) {
+			left.collectIntrinsics(calls);
+			right.collectIntrinsics(calls);
 		}
 
 		@Override

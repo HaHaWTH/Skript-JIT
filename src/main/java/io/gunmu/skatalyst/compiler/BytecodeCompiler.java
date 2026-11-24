@@ -28,6 +28,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import static org.objectweb.asm.Opcodes.*;
@@ -79,7 +80,8 @@ public final class BytecodeCompiler {
 		method.visitMaxs(0, 0);
 		method.visitEnd();
 		writer.visitEnd();
-		return new DirectFunction(parameters, (DirectFunction.Body) link(writer, emitter.constants), conversion);
+		return new DirectFunction(parameters, (DirectFunction.Body) link(writer, emitter.constants), conversion,
+			List.copyOf(emitter.dependencies));
 	}
 
 	public static CompiledCode compile(Trigger trigger, Map<TriggerItem, Optimization> optimizations) {
@@ -89,21 +91,22 @@ public final class BytecodeCompiler {
 
 		IdentityHashMap<TriggerItem, CompiledCode.Entry> entries = new IdentityHashMap<>();
 		Set<TriggerItem> optimized = Collections.newSetFromMap(new IdentityHashMap<>());
-		if (items.size() == 1 && !optimizations.containsKey(trigger))
-			return new CompiledCode(entries, optimized);
-
-		MethodHandle walkHandle = TriggerItem.skatalystWalkHandle();
-		for (int start = 0; start < items.size(); start += CHUNK_ITEMS) {
-			List<Item> chunkItems = items.subList(start, Math.min(start + CHUNK_ITEMS, items.size()));
-			installChunk(chunkItems, walkHandle, optimizations, optimized, entries);
+		Set<BooleanSupplier> dependencies = Collections.newSetFromMap(new IdentityHashMap<>());
+		if (items.size() != 1 || optimizations.containsKey(trigger)) {
+			MethodHandle walkHandle = TriggerItem.skatalystWalkHandle();
+			for (int start = 0; start < items.size(); start += CHUNK_ITEMS) {
+				List<Item> chunkItems = items.subList(start, Math.min(start + CHUNK_ITEMS, items.size()));
+				installChunk(chunkItems, walkHandle, optimizations, optimized, entries, dependencies);
+			}
 		}
-		return new CompiledCode(entries, optimized);
+		return new CompiledCode(entries, optimized, List.copyOf(dependencies), null);
 	}
 
 	private static void collect(TriggerItem node, @Nullable TriggerItem following, @Nullable TriggerItem exit,
 								@Nullable TriggerItem ancestorExit, List<Item> items, Set<TriggerItem> visited) {
-		if (!visited.add(node))
+		if (!visited.add(node)) {
 			return;
+		}
 
 		List<TriggerItem> children = node instanceof TriggerSection section ? section.skatalystItems() : List.of();
 		items.add(new Item(node, children.isEmpty() ? null : children.getFirst(), following, exit, ancestorExit));
@@ -117,19 +120,21 @@ public final class BytecodeCompiler {
 	}
 
 	private static void installChunk(List<Item> items, MethodHandle walkHandle, Map<TriggerItem, Optimization> plans,
-									 Set<TriggerItem> optimized, IdentityHashMap<TriggerItem, CompiledCode.Entry> entries) {
+									 Set<TriggerItem> optimized, IdentityHashMap<TriggerItem, CompiledCode.Entry> entries,
+									 Set<BooleanSupplier> dependencies) {
 		EncodedChunk encoded = encodeChunk(items, walkHandle, plans);
 		if (encoded.length() > MAX_CODE_BYTES) {
 			if (items.size() > 1) {
 				int half = items.size() / 2;
-				installChunk(items.subList(0, half), walkHandle, plans, optimized, entries);
-				installChunk(items.subList(half, items.size()), walkHandle, plans, optimized, entries);
+				installChunk(items.subList(0, half), walkHandle, plans, optimized, entries, dependencies);
+				installChunk(items.subList(half, items.size()), walkHandle, plans, optimized, entries, dependencies);
 				return;
 			}
 			encoded = encodeChunk(items, walkHandle, Map.of());
 		}
 		CompiledCode.Chunk chunk = encoded.link();
 		optimized.addAll(encoded.optimized());
+		dependencies.addAll(encoded.dependencies());
 		for (int index = 0; index < items.size(); index++) {
 			entries.put(items.get(index).node(), new CompiledCode.Entry(chunk, index));
 		}
@@ -170,8 +175,8 @@ public final class BytecodeCompiler {
 			Item item = items.get(index);
 			TriggerItem adjacent = index + 1 < items.size() ? items.get(index + 1).node() : null;
 			method.visitLabel(labels[index]);
-			emitter.start(item.node());
 			Optimization optimization = optimizations.get(item.node());
+			emitter.start(item.node(), optimization == null || !optimization.handlesOriginalExposure());
 			if (optimization != null) {
 				optimization.emit(emitter);
 				optimized.add(item.node());
@@ -180,8 +185,9 @@ public final class BytecodeCompiler {
 			}
 
 			if (emitter.fixedSuccessor) {
-				if (adjacent == null || adjacent != emitter.successor)
+				if (adjacent == null || adjacent != emitter.successor) {
 					returnOrJump(emitter, targets, emitter.successor);
+				}
 				continue;
 			}
 
@@ -226,10 +232,11 @@ public final class BytecodeCompiler {
 		method.visitMaxs(0, 0);
 		method.visitEnd();
 		writer.visitEnd();
-		return new EncodedChunk(writer, emitter.constants, optimized, methodEnd.getOffset());
+		return new EncodedChunk(writer, emitter.constants, optimized, emitter.dependencies, methodEnd.getOffset());
 	}
 
-	private record EncodedChunk(ClassWriter writer, List<Object> constants, List<TriggerItem> optimized, int length) {
+	private record EncodedChunk(ClassWriter writer, List<Object> constants, List<TriggerItem> optimized,
+								List<BooleanSupplier> dependencies, int length) {
 		private CompiledCode.Chunk link() {
 			return (CompiledCode.Chunk) BytecodeCompiler.link(writer, constants);
 		}
@@ -257,8 +264,9 @@ public final class BytecodeCompiler {
 
 	private static void branchTo(Emitter emitter, Map<TriggerItem, Label> targets, @Nullable TriggerItem node) {
 		Label target = targets.get(node);
-		if (target == null)
+		if (target == null) {
 			return;
+		}
 		emitter.method.visitVarInsn(ALOAD, NEXT);
 		emitter.loadConstant(node, TriggerItem.class);
 		emitter.method.visitJumpInsn(IF_ACMPEQ, target);
@@ -267,8 +275,9 @@ public final class BytecodeCompiler {
 	private static @Nullable TriggerItem lexicalSuccessor(List<Item> items, @Nullable TriggerItem tail) {
 		if (tail != null) {
 			for (Item item : items) {
-				if (item.node() == tail)
+				if (item.node() == tail) {
 					return item.following();
+				}
 			}
 		}
 		return null;
@@ -276,17 +285,22 @@ public final class BytecodeCompiler {
 
 	private static void emitExits(Emitter emitter, Map<TriggerItem, Label> targets, Item item,
 								  @Nullable TriggerItem adjacent, @Nullable TriggerItem regionExit) {
-		if (item.firstChild() != adjacent)
+		if (item.firstChild() != adjacent) {
 			branchTo(emitter, targets, item.firstChild());
-		if (item.following() != adjacent && item.following() != item.firstChild())
+		}
+		if (item.following() != adjacent && item.following() != item.firstChild()) {
 			branchTo(emitter, targets, item.following());
-		if (item.exit() != adjacent && item.exit() != item.following() && item.exit() != item.firstChild())
+		}
+		if (item.exit() != adjacent && item.exit() != item.following() && item.exit() != item.firstChild()) {
 			branchTo(emitter, targets, item.exit());
+		}
 		TriggerItem ancestor = item.ancestorExit();
-		if (ancestor != adjacent && ancestor != item.exit() && ancestor != item.following() && ancestor != item.firstChild())
+		if (ancestor != adjacent && ancestor != item.exit() && ancestor != item.following() && ancestor != item.firstChild()) {
 			branchTo(emitter, targets, ancestor);
-		if (regionExit != adjacent && !item.expects(regionExit))
+		}
+		if (regionExit != adjacent && !item.expects(regionExit)) {
 			branchTo(emitter, targets, regionExit);
+		}
 		emitter.method.visitVarInsn(ALOAD, NEXT);
 		emitter.method.visitInsn(ARETURN);
 	}
@@ -321,6 +335,24 @@ public final class BytecodeCompiler {
 		 * Emits a region that pushes its actual successor, or fixes its successor with {@link Emitter#finishAt}.
 		 */
 		void emit(Emitter emitter);
+
+		default boolean handlesOriginalExposure() {
+			return false;
+		}
+
+		static Optimization ownedExposure(Optimization code) {
+			return new Optimization() {
+				@Override
+				public void emit(Emitter emitter) {
+					code.emit(emitter);
+				}
+
+				@Override
+				public boolean handlesOriginalExposure() {
+					return true;
+				}
+			};
+		}
 	}
 
 	public static final class Emitter {
@@ -329,27 +361,45 @@ public final class BytecodeCompiler {
 		private final MethodHandle walkHandle;
 		private final List<Object> constants = new ArrayList<>();
 		private final Map<Object, Integer> constantIndices = new IdentityHashMap<>();
+		private final List<BooleanSupplier> dependencies = new ArrayList<>();
 		private int nextLocal;
 		private boolean fixedSuccessor;
 		private @Nullable TriggerItem successor;
 		private @Nullable TriggerItem regionTail;
+		private @Nullable TriggerItem preparedOriginal;
 
 		private Emitter(MethodVisitor method, MethodHandle walkHandle) {
 			this.method = method;
 			this.walkHandle = walkHandle;
 		}
 
-		private void start(TriggerItem item) {
+		private void start(TriggerItem item, boolean prepareOriginal) {
 			nextLocal = NEXT + 1;
 			fixedSuccessor = false;
 			successor = null;
 			regionTail = null;
 			setCurrent(item);
-			if (item.skatalystExposesLocals()) {
+			preparedOriginal = prepareOriginal ? item : null;
+			if (prepareOriginal) {
+				beforeOriginal(item);
+			}
+		}
+
+		private void beforeOriginal(TriggerItem item) {
+			if (item.skatalystHasOriginalContract()) {
+				loadConstant(item, TriggerItem.class);
+				loadEvent();
+				method.visitMethodInsn(INVOKEVIRTUAL, TRIGGER_ITEM.getInternalName(), "skatalystBeforeOriginal",
+					Type.getMethodDescriptor(Type.VOID_TYPE, EVENT_TYPE), false);
+			} else if (item.skatalystExposesLocals()) {
 				loadEvent();
 				method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(Skatalyst.class), "exposeLocals",
 					Type.getMethodDescriptor(Type.VOID_TYPE, EVENT_TYPE), false);
 			}
+		}
+
+		public void dependOn(BooleanSupplier active) {
+			dependencies.add(active);
 		}
 
 		public MethodVisitor method() {
@@ -375,6 +425,9 @@ public final class BytecodeCompiler {
 		}
 
 		public void walkOriginal(TriggerItem item) {
+			if (item != preparedOriginal) {
+				beforeOriginal(item);
+			}
 			loadConstant(walkHandle, MethodHandle.class);
 			loadConstant(item, TriggerItem.class);
 			invokeWalk();

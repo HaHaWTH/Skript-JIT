@@ -19,6 +19,7 @@ import ch.njol.skript.util.Timespan;
 import ch.njol.skript.variables.HintManager;
 import ch.njol.util.OpenCloseable;
 import ch.njol.util.StringUtils;
+import io.gunmu.skatalyst.addon.ParsedBinding;
 import org.bukkit.Bukkit;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
@@ -1200,13 +1201,18 @@ public class ScriptLoader {
 
 	private static <T extends TriggerItem> @Nullable T observeSyntax(ParserInstance parser, Supplier<T> parse) {
 		boolean outer = parser.skatalystSwapExternalSyntax(false);
+		ParsedBinding.Collector collector = new ParsedBinding.Collector();
+		ParsedBinding.Collector outerCollector = parser.skatalystSwapCollector(collector);
 		T item = null;
 		try {
 			item = parse.get();
 			return item;
 		} finally {
-			if (parser.skatalystSwapExternalSyntax(outer) && item != null)
+			parser.skatalystSwapCollector(outerCollector);
+			if (parser.skatalystSwapExternalSyntax(outer) && item != null) {
 				item.skatalystMarkExternalSyntax();
+				item.skatalystBindSyntax(collector.finish(item));
+			}
 		}
 	}
 

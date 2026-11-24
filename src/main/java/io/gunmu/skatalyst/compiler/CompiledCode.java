@@ -6,27 +6,43 @@ import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 @ApiStatus.Internal
 public final class CompiledCode {
 
 	private final IdentityHashMap<TriggerItem, Entry> entries;
 	private final Set<TriggerItem> optimized;
+	private final List<BooleanSupplier> dependencies;
 	private final @Nullable DirectFunction function;
 
-	CompiledCode(IdentityHashMap<TriggerItem, Entry> entries, Set<TriggerItem> optimized) {
-		this(entries, optimized, null);
-	}
-
-	private CompiledCode(IdentityHashMap<TriggerItem, Entry> entries, Set<TriggerItem> optimized, @Nullable DirectFunction function) {
+	CompiledCode(IdentityHashMap<TriggerItem, Entry> entries, Set<TriggerItem> optimized,
+				 List<BooleanSupplier> dependencies, @Nullable DirectFunction function) {
 		this.entries = entries;
 		this.optimized = optimized;
+		this.dependencies = dependencies;
 		this.function = function;
 	}
 
 	CompiledCode withFunction(DirectFunction function) {
-		return new CompiledCode(entries, optimized, function);
+		return new CompiledCode(entries, optimized, dependencies, function);
+	}
+
+	public boolean dependenciesActive() {
+		for (BooleanSupplier dependency : dependencies) {
+			if (!dependency.getAsBoolean()) {
+				return false;
+			}
+		}
+		return function == null || function.dependenciesActive();
+	}
+
+	public void retire() {
+		if (function != null) {
+			function.retire();
+		}
 	}
 
 	public @Nullable DirectFunction directFunction() {
@@ -34,7 +50,7 @@ public final class CompiledCode {
 	}
 
 	public boolean isEmpty() {
-		return entries.isEmpty();
+		return entries.isEmpty() && function == null;
 	}
 
 	public @Nullable Entry entry(TriggerItem item) {

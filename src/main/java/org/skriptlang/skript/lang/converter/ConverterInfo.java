@@ -1,6 +1,7 @@
 package org.skriptlang.skript.lang.converter;
 
 import com.google.common.base.Preconditions;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -15,6 +16,7 @@ public final class ConverterInfo<F, T> {
 	private final Class<T> to;
 	private final Converter<F, T> converter;
 	private final int flags;
+	private final boolean skatalystOpaque;
 
 	public ConverterInfo(
 		@NotNull Class<F> from,
@@ -22,6 +24,11 @@ public final class ConverterInfo<F, T> {
 		@NotNull Converter<F, T> converter,
 		int flags
 	) {
+		this(from, to, converter, flags, converter != null && (converter instanceof ChainedConverter<?, ?, ?> chain
+			? chain.skatalystOpaque() : converter.getClass().getClassLoader() != ConverterInfo.class.getClassLoader()));
+	}
+
+	ConverterInfo(Class<F> from, Class<T> to, Converter<F, T> converter, int flags, boolean skatalystOpaque) {
 		Preconditions.checkNotNull(from, "Cannot convert from nothing to something! (from is null)");
 		Preconditions.checkNotNull(to, "Cannot convert from something to nothing! (to is null)");
 		Preconditions.checkNotNull(converter, "Cannot convert using a null converter!");
@@ -29,6 +36,7 @@ public final class ConverterInfo<F, T> {
 		this.to = to;
 		this.converter = converter;
 		this.flags = flags;
+		this.skatalystOpaque = skatalystOpaque;
 	}
 
 	public Class<F> getFrom() {
@@ -45,6 +53,11 @@ public final class ConverterInfo<F, T> {
 
 	public int getFlags() {
 		return flags;
+	}
+
+	@ApiStatus.Internal
+	public boolean skatalystOpaque() {
+		return skatalystOpaque;
 	}
 
 	@Override

@@ -275,7 +275,7 @@ public final class Converters {
 		// Instead, we should just try and convert during runtime when we have a better idea of the fromType
 		if (fromType == Object.class) {
 			return new ConverterInfo<>(
-				fromType, toType, fromObject -> Converters.convert(fromObject, toType), Converter.NO_LEFT_CHAINING
+					fromType, toType, fromObject -> Converters.convert(fromObject, toType), Converter.NO_LEFT_CHAINING, true
 			);
 		}
 
@@ -297,7 +297,7 @@ public final class Converters {
 						return (T) converted;
 					}
 					return null;
-				}, Converter.ALL_CHAINING);
+				}, Converter.ALL_CHAINING, info.skatalystOpaque());
 
 			} else if (fromType.isAssignableFrom(unknownInfo.getFrom()) && toType.isAssignableFrom(unknownInfo.getTo())) {
 				ConverterInfo<SubType, T> info = (ConverterInfo<SubType, T>) unknownInfo;
@@ -313,7 +313,7 @@ public final class Converters {
 						return null;
 					}
 					return info.getConverter().convert((SubType) fromObject);
-				}, Converter.ALL_CHAINING);
+				}, Converter.ALL_CHAINING, info.skatalystOpaque());
 
 			}
 		}
@@ -342,7 +342,7 @@ public final class Converters {
 						return (T) converted;
 					}
 					return null;
-				}, Converter.ALL_CHAINING);
+				}, Converter.ALL_CHAINING, info.skatalystOpaque());
 
 			}
 		}

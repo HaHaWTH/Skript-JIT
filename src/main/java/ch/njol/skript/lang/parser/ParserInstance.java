@@ -8,6 +8,7 @@ import ch.njol.skript.config.Node;
 import ch.njol.skript.lang.Expression;
 import ch.njol.skript.lang.SkriptEvent;
 import ch.njol.skript.lang.SkriptParser;
+import ch.njol.skript.lang.SyntaxElement;
 import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.log.HandlerList;
 import ch.njol.skript.structures.StructOptions.OptionsData;
@@ -15,6 +16,7 @@ import ch.njol.skript.variables.HintManager;
 import ch.njol.util.Kleenean;
 import ch.njol.util.coll.CollectionUtils;
 import com.google.common.base.Preconditions;
+import io.gunmu.skatalyst.addon.ParsedBinding;
 import org.bukkit.event.Event;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
@@ -24,6 +26,7 @@ import org.skriptlang.skript.lang.experiment.ExperimentSet;
 import org.skriptlang.skript.lang.experiment.Experimented;
 import org.skriptlang.skript.lang.script.Script;
 import org.skriptlang.skript.lang.structure.Structure;
+import org.skriptlang.skript.registration.SyntaxInfo;
 
 import java.io.File;
 import java.util.*;
@@ -43,6 +46,26 @@ public final class ParserInstance implements Experimented {
 
 	private boolean isActive = false;
 	private boolean skatalystExternalSyntax;
+	private @Nullable ParsedBinding.Collector skatalystCollector;
+
+	@ApiStatus.Internal
+	public @Nullable ParsedBinding.Collector skatalystSwapCollector(@Nullable ParsedBinding.Collector collector) {
+		ParsedBinding.Collector previous = skatalystCollector;
+		skatalystCollector = collector;
+		return previous;
+	}
+
+	@ApiStatus.Internal
+	public int skatalystObservationMark() {
+		return skatalystCollector == null ? 0 : skatalystCollector.mark();
+	}
+
+	@ApiStatus.Internal
+	public void skatalystRestoreObservations(int mark) {
+		if (skatalystCollector != null) {
+			skatalystCollector.restore(mark);
+		}
+	}
 
 	/** Restores the observation of the enclosing statement after parsing a nested statement. */
 	@ApiStatus.Internal
@@ -59,8 +82,33 @@ public final class ParserInstance implements Experimented {
 
 	@ApiStatus.Internal
 	public void skatalystObserveSyntax(Class<?> implementation) {
-		if (implementation.getClassLoader() != ParserInstance.class.getClassLoader())
+		if (skatalystCollector != null ? skatalystCollector.observeUnknown(implementation)
+			: implementation.getClassLoader() != ParserInstance.class.getClassLoader()) {
 			skatalystExternalSyntax = true;
+		}
+	}
+
+	@ApiStatus.Internal
+	public void skatalystObserveSyntax(SyntaxInfo<?> info, SyntaxElement selected, SyntaxElement element,
+		int pattern, SkriptParser.ParseResult parseResult) {
+		if (skatalystCollector != null) {
+			if (skatalystCollector.observe(info, selected, element, pattern, parseResult)) {
+				skatalystExternalSyntax = true;
+			}
+		} else {
+			skatalystObserveSyntax(info.type());
+			if (selected != element) {
+				skatalystObserveSyntax(element.getClass());
+			}
+		}
+	}
+
+	@ApiStatus.Internal
+	public void skatalystObserveOpaqueCall() {
+		if (skatalystCollector != null) {
+			skatalystExternalSyntax = true;
+			skatalystCollector.observeUnknown();
+		}
 	}
 
 	/**

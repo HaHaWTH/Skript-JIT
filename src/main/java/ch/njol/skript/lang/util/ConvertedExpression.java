@@ -43,6 +43,7 @@ public class ConvertedExpression<F, T> implements Expression<T> {
 	 */
 	private final Collection<ConverterInfo<? super F, ? extends T>> converterInfos;
 	private final Class<? extends T>[] returnTypes;
+	private final boolean performFromCheck;
 
 	public ConvertedExpression(Expression<? extends F> source, Class<T> to, ConverterInfo<? super F, ? extends T> info) {
 		this.source = source;
@@ -51,6 +52,10 @@ public class ConvertedExpression<F, T> implements Expression<T> {
 		this.toExact = new Class[]{to};
 		this.converter = info.getConverter();
 		this.converterInfos = Collections.singleton(info);
+		this.performFromCheck = false;
+		if (info.skatalystOpaque()) {
+			getParser().skatalystObserveOpaqueCall();
+		}
 		//noinspection unchecked
 		this.returnTypes = new Class[]{info.getTo()};
 	}
@@ -80,6 +85,10 @@ public class ConvertedExpression<F, T> implements Expression<T> {
 		this.to = (Class<T>) Utils.getSuperType(toExact);
 		this.toExact = toExact;
 		this.converterInfos = infos;
+		this.performFromCheck = performFromCheck;
+		if (infos.stream().anyMatch(ConverterInfo::skatalystOpaque)) {
+			getParser().skatalystObserveOpaqueCall();
+		}
 		//noinspection unchecked
 		this.returnTypes = converterInfos.stream().map(ConverterInfo::getTo).distinct().toArray(Class[]::new);
 		this.converter = fromObject -> {
@@ -105,7 +114,7 @@ public class ConvertedExpression<F, T> implements Expression<T> {
 			if (CollectionUtils.containsSuperclass(to, type)) { // this type is of T, build a converter simply casting
 				// noinspection unchecked - 'type' is a desired type in 'to'
 				Class<T> toType = (Class<T>) type;
-				infos.add(new ConverterInfo<>(type, toType, toType::cast, 0));
+				infos.add(new ConverterInfo<>(type, toType, new IdentityCast<>(toType), 0));
 			} else { // this possible return type is not included in 'to'
 				// build all converters for converting the possible return type into any of the types of 'to'
 				for (Class<T> toType : to) {
@@ -132,6 +141,13 @@ public class ConvertedExpression<F, T> implements Expression<T> {
 		}
 
 		return null;
+	}
+
+	private record IdentityCast<F, T>(Class<T> type) implements Converter<F, T> {
+		@Override
+		public T convert(F value) {
+			return type.cast(value);
+		}
 	}
 
 	@Override
@@ -213,6 +229,17 @@ public class ConvertedExpression<F, T> implements Expression<T> {
 	@ApiStatus.Internal
 	public final Expression<?> skatalystInput() {
 		return source;
+	}
+
+	/** Whether the first applicable converter is the parser's own identity cast for this exact runtime type. */
+	@ApiStatus.Internal
+	public final boolean skatalystIsIdentityFor(Class<?> actual) {
+		for (var info : converterInfos) {
+			if (!performFromCheck || info.getFrom().isAssignableFrom(actual)) {
+				return info.getConverter() instanceof IdentityCast<?, ?> && info.getTo().isAssignableFrom(actual);
+			}
+		}
+		return false;
 	}
 
 	/** Applies the parsed converter to an already evaluated non-null scalar. */

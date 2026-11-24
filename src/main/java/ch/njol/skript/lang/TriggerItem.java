@@ -3,6 +3,7 @@ package ch.njol.skript.lang;
 import ch.njol.skript.Skript;
 import ch.njol.util.StringUtils;
 import io.gunmu.skatalyst.Skatalyst;
+import io.gunmu.skatalyst.addon.ParsedBinding;
 import org.bukkit.event.Event;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
@@ -27,6 +28,7 @@ public abstract class TriggerItem implements Debuggable {
 	protected @Nullable TriggerSection parent = null;
 	private @Nullable TriggerItem next = null;
 	private boolean exposesLocals = getClass().getClassLoader() != TriggerItem.class.getClassLoader();
+	private @Nullable ParsedBinding skatalystBinding;
 
 	protected TriggerItem() {}
 
@@ -95,9 +97,30 @@ public abstract class TriggerItem implements Debuggable {
 
 	@ApiStatus.Internal
 	public static @Nullable TriggerItem skatalystStep(TriggerItem item, Event event) {
-		if (item.exposesLocals)
-			Skatalyst.exposeLocals(event);
+		item.skatalystBeforeOriginal(event);
 		return item.walk(event);
+	}
+
+	@ApiStatus.Internal
+	public final void skatalystBeforeOriginal(Event event) {
+		if (exposesLocals && (skatalystBinding == null || !skatalystBinding.preservesLocals())) {
+			Skatalyst.exposeLocals(event);
+		}
+	}
+
+	@ApiStatus.Internal
+	public final boolean skatalystHasOriginalContract() {
+		return skatalystBinding != null && skatalystBinding.hasOriginalContract();
+	}
+
+	@ApiStatus.Internal
+	public final @Nullable ParsedBinding skatalystBinding() {
+		return skatalystBinding;
+	}
+
+	@ApiStatus.Internal
+	public final void skatalystBindSyntax(@Nullable ParsedBinding binding) {
+		skatalystBinding = binding;
 	}
 
 	@ApiStatus.Internal

@@ -10,6 +10,7 @@ import ch.njol.skript.lang.TriggerItem;
 import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.sections.SecConditional;
 import ch.njol.skript.sections.SecWhile;
+import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler.Emitter;
 import io.gunmu.skatalyst.compiler.control.ComparisonOptimizations;
 import io.gunmu.skatalyst.compiler.optimize.NumericExpression.*;
@@ -39,6 +40,7 @@ final class NumericRegion {
 	final @Nullable LoopSection loop;
 	final Map<String, NumericKind> writes = new LinkedHashMap<>();
 	final Map<TriggerItem, TriggerItem> edges = new LinkedHashMap<>();
+	final Set<NumericCall> intrinsics = new LinkedHashSet<>();
 	private final Map<String, NumericKind> kinds;
 	private final NumericKind defaultKind;
 	private final Set<String> names = new LinkedHashSet<>();
@@ -54,22 +56,26 @@ final class NumericRegion {
 		this.kinds = kinds;
 	}
 
-	static List<NumericRegion> plans(@Nullable LoopSection loop, List<TriggerItem> items, @Nullable CondCompare comparison) {
-		List<EffChange.SkatalystChange> changes = new ArrayList<>();
-		if (items.isEmpty() || !collectChanges(items, changes) || changes.isEmpty()) {
+	static List<NumericRegion> plans(@Nullable LoopSection loop, List<TriggerItem> items,
+			@Nullable CondCompare comparison, @Nullable TriggerItem comparisonOwner) {
+		List<EffChange> changes = new ArrayList<>();
+		Map<String, NumericKind> fixedKinds = new HashMap<>();
+		TriggerItem owner = loop == null ? comparisonOwner : loop;
+		if (items.isEmpty() || !collectChanges(items, changes, fixedKinds) || changes.isEmpty()
+				|| owner != null && !CoreOptimizations.inferNumericOperands(owner, fixedKinds)) {
 			return List.of();
 		}
 		List<NumericRegion> plans = new ArrayList<>(2);
 		for (NumericKind kind : NumericKind.values()) {
-			NumericRegion plan = new NumericRegion(loop, kind, new HashMap<>());
+			NumericRegion plan = new NumericRegion(loop, kind, new HashMap<>(fixedKinds));
 			plan.inferKinds(changes);
 			Set<String> defined = new HashSet<>();
-			if (loop instanceof SecWhile && (plan.condition = plan.test(comparison, defined)) == null) {
+			if (loop instanceof SecWhile && (plan.condition = plan.test(comparison, loop, defined)) == null) {
 				continue;
 			}
 			plan.body = plan.block(items, defined, loop, loop != null);
 			if (plan.body == null) continue;
-			if (loop == null && comparison != null && (plan.condition = plan.test(comparison, defined)) == null) {
+			if (loop == null && comparisonOwner != null && (plan.condition = plan.test(comparison, comparisonOwner, defined)) == null) {
 				continue;
 			}
 			if (plan.nodes > MAX_NODES || (!plans.isEmpty() && plan.names.stream()
@@ -81,15 +87,18 @@ final class NumericRegion {
 		return plans;
 	}
 
-	private static boolean collectChanges(List<TriggerItem> items, List<EffChange.SkatalystChange> changes) {
+	private static boolean collectChanges(List<TriggerItem> items, List<EffChange> changes, Map<String, NumericKind> fixedKinds) {
 		if (items.size() > MAX_NODES) return false;
 		for (TriggerItem item : items) {
-			if (item.skatalystExposesLocals() || changes.size() >= MAX_NODES) return false;
+			if (changes.size() >= MAX_NODES || !CoreOptimizations.numericCandidate(item)
+					|| !CoreOptimizations.inferNumericOperands(item, fixedKinds)) {
+				return false;
+			}
 			if (item.getClass() == EffChange.class) {
-				changes.add(((EffChange) item).skatalystChange());
+				changes.add((EffChange) item);
 			} else if (item.getClass() == SecConditional.class) {
-				if (!collectChanges(((SecConditional) item).skatalystItems(), changes)) return false;
-			} else if (item.getClass() != EffContinue.class && item.getClass() != EffExit.class) {
+				if (!collectChanges(((SecConditional) item).skatalystItems(), changes, fixedKinds)) return false;
+			} else if (item.skatalystExposesLocals() || item.getClass() != EffContinue.class && item.getClass() != EffExit.class) {
 				return false;
 			}
 		}
@@ -100,18 +109,20 @@ final class NumericRegion {
 		return kinds.getOrDefault(name, defaultKind);
 	}
 
-	private void inferKinds(List<EffChange.SkatalystChange> changes) {
+	private void inferKinds(List<EffChange> changes) {
 		// A literal, loop counter or decimal operation can establish a slot independently
 		// of the other dynamic inputs (e.g. an integral index and a decimal accumulator).
 		int previous;
 		do {
 			previous = kinds.size();
-			for (var change : changes) {
+			for (EffChange effect : changes) {
+				var change = effect.skatalystChange();
 				String target = CoreOptimizations.scalarLocal(change.target());
 				if (target == null || kinds.containsKey(target)) continue;
-				NumericExpression value = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop);
+				NumericExpression value = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop,
+					effect.skatalystBinding());
 				if (value != null &&
-					(value instanceof Constant || value instanceof Iteration || value.kind() != defaultKind)) {
+					(value instanceof Constant || value instanceof Iteration || value instanceof IntrinsicCall || value.kind() != defaultKind)) {
 					kinds.put(target, value.kind());
 				}
 			}
@@ -128,12 +139,14 @@ final class NumericRegion {
 				var change = ((EffChange) item).skatalystChange();
 				String target = CoreOptimizations.scalarLocal(change.target());
 				if (target == null) return null;
-				NumericExpression value = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop);
+				NumericExpression value = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop,
+					item.skatalystBinding());
 				NumericKind kind = kind(target);
 				if (value == null || value.kind() != kind || !kind.canStoreDirectly()
 					|| value instanceof Constant(Number value1) && value1 instanceof Integer) {
 					return null;
 				}
+				if (!CoreOptimizations.retainNumericIntrinsics(item, intrinsics, value, null)) return null;
 				nodes += value.nodes() - 1;
 				read(value, defined, value instanceof Read);
 				if (value instanceof Constant || value instanceof Read) {
@@ -166,8 +179,10 @@ final class NumericRegion {
 					SecConditional section = (SecConditional) items.get(index);
 					NumericCondition test = null;
 					if (index == first || !section.skatalystIsElse()) {
-						test = test(index == first ? section.skatalystSimpleIfComparison() : section.skatalystElseIfComparison(), defined);
+						test = test(index == first ? section.skatalystSimpleIfComparison() : section.skatalystElseIfComparison(), section, defined);
 						if (test == null) return null;
+					} else if (section.skatalystExposesLocals()) {
+						return null;
 					}
 					Set<String> armDefined = new HashSet<>(defined);
 					List<Statement> body = block(section.skatalystItems(), armDefined, after, false);
@@ -214,13 +229,13 @@ final class NumericRegion {
 		});
 	}
 
-	private @Nullable NumericCondition test(@Nullable CondCompare compare, Set<String> defined) {
+	private @Nullable NumericCondition test(@Nullable CondCompare compare, TriggerItem owner, Set<String> defined) {
 		var binary = compare == null ? null : compare.skatalystComparison();
 		if (binary == null) return null;
 
-		NumericExpression left = NumericExpression.parse(binary.first(), this::kind, loop);
-		NumericExpression right = NumericExpression.parse(binary.second(), this::kind, loop);
-		if (left == null || right == null || left instanceof Binary || right instanceof Binary) {
+		NumericExpression left = NumericExpression.parse(binary.first(), this::kind, loop, owner.skatalystBinding());
+		NumericExpression right = NumericExpression.parse(binary.second(), this::kind, loop, owner.skatalystBinding());
+		if (left == null || right == null || left instanceof Binary || right instanceof Binary || left.needsExit() || right.needsExit()) {
 			return null;
 		}
 		Class<?> first = comparisonType(left);
@@ -231,6 +246,9 @@ final class NumericRegion {
 		}
 		boolean identity = dynamic && first == Double.class && second == Double.class;
 		if (identity) {
+			if (left instanceof IntrinsicCall || right instanceof IntrinsicCall) {
+				return null;
+			}
 			if (left instanceof Read read) {
 				references.add(read.name());
 			}
@@ -238,6 +256,7 @@ final class NumericRegion {
 				references.add(read.name());
 			}
 		}
+		if (!CoreOptimizations.retainNumericIntrinsics(owner, intrinsics, left, right)) return null;
 		read(left, defined, true);
 		read(right, defined, true);
 		Relation failed = compare.isNegated() ? binary.relation() : binary.relation().getInverse();

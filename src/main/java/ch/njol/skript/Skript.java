@@ -43,6 +43,7 @@ import ch.njol.util.coll.iterator.EnumerationIterable;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import io.gunmu.skatalyst.Skatalyst;
+import io.gunmu.skatalyst.addon.AddonRegistry;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.*;
 import org.bukkit.command.CommandSender;
@@ -53,6 +54,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.server.PluginDisableEvent;
+import org.bukkit.event.server.PluginEnableEvent;
 import org.bukkit.event.server.ServerLoadEvent;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.PluginDescriptionFile;
@@ -1194,6 +1196,7 @@ public final class Skript extends JavaPlugin implements Listener {
 	@EventHandler
 	public void onPluginDisable(PluginDisableEvent event) {
 		Plugin plugin = event.getPlugin();
+		AddonRegistry.onPluginDisable(plugin);
 		PluginDescriptionFile descriptionFile = plugin.getDescription();
 		if (descriptionFile.getDepend().contains("Skript") || descriptionFile.getSoftDepend().contains("Skript")) {
 			// An addon being disabled, check if server is being stopped
@@ -1201,6 +1204,11 @@ public final class Skript extends JavaPlugin implements Listener {
 				beforeDisable();
 			}
 		}
+	}
+
+	@EventHandler
+	public void onPluginEnable(PluginEnableEvent event) {
+		AddonRegistry.onPluginEnable(event.getPlugin());
 	}
 
 	private static final boolean IS_STOPPING_EXISTS;

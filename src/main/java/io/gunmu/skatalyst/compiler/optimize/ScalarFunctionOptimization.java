@@ -4,6 +4,7 @@ import ch.njol.skript.effects.EffReturn;
 import ch.njol.skript.lang.KeyProviderExpression;
 import ch.njol.skript.lang.Trigger;
 import ch.njol.skript.lang.util.ConvertedExpression;
+import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import io.gunmu.skatalyst.compiler.DirectFunction;
 import io.gunmu.skatalyst.compiler.optimize.NumericSlots.NumericKind;
@@ -17,8 +18,10 @@ import org.skriptlang.skript.common.function.Parameter;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.objectweb.asm.Opcodes.*;
 
@@ -37,60 +40,80 @@ public final class ScalarFunctionOptimization {
 		var signature = trigger.skatalystSite().functionSignature();
 		if (signature == null || signature.returnType() == null || signature.returnType().isArray()
 			|| trigger.skatalystItems().size() != 1 || trigger.getActualNext() != null
-			|| trigger.skatalystItems().getFirst().getClass() != EffReturn.class)
+			|| trigger.skatalystItems().getFirst().getClass() != EffReturn.class) {
 			return null;
+		}
 
 		EffReturn statement = (EffReturn) trigger.skatalystItems().getFirst();
 		var expression = statement.skatalystScalarValue();
-		if (statement.skatalystExposesLocals() || expression == null || KeyProviderExpression.canReturnKeys(expression))
+		if (!CoreOptimizations.numericCandidate(statement) || expression == null || KeyProviderExpression.canReturnKeys(expression)) {
 			return null;
+		}
 		var conversion = expression.getClass() == ConvertedExpression.class ? (ConvertedExpression<?, ?>) expression : null;
 		var input = conversion == null ? expression : conversion.skatalystInput();
 
 		Parameter<?>[] parameters = signature.parameters().all();
-		if (parameters.length > DirectFunction.MAX_PARAMETERS)
+		if (parameters.length > DirectFunction.MAX_PARAMETERS) {
 			return null;
+		}
 		List<String> names = new ArrayList<>(parameters.length);
 		for (Parameter<?> parameter : parameters) {
-			if (!parameter.isSingle() || !parameter.modifiers().isEmpty())
+			if (!parameter.isSingle() || !parameter.modifiers().isEmpty()) {
 				return null;
+			}
 			names.add(parameter.name());
 		}
 
+		Map<String, NumericKind> fixedKinds = new LinkedHashMap<>();
+		if (!CoreOptimizations.inferNumericOperands(statement, fixedKinds)) {
+			return null;
+		}
 		List<Variant> variants = new ArrayList<>();
+		Set<NumericCall> intrinsics = new LinkedHashSet<>();
 		for (NumericKind kind : NumericKind.values()) {
-			if (!kind.canStoreDirectly())
+			List<NumericKind> kinds = names.stream().map(name -> fixedKinds.getOrDefault(name, kind)).toList();
+			if (kinds.stream().anyMatch(inputKind -> !inputKind.canStoreDirectly())
+					|| variants.stream().anyMatch(variant -> variant.inputKinds().equals(kinds))) {
 				continue;
-			NumericExpression value = NumericExpression.parse(input, kind, null);
+			}
+			NumericExpression value = NumericExpression.parse(input, name -> fixedKinds.getOrDefault(name, kind), null,
+				statement.skatalystBinding());
 			if (value == null || value.nodes() > MAX_OPERATIONS || conversion == null
-				&& value.possibleTypes().stream().anyMatch(type -> !signature.returnType().isAssignableFrom(type)))
+				&& value.possibleTypes().stream().anyMatch(type -> !signature.returnType().isAssignableFrom(type))) {
 				continue;
+			}
 			Map<String, Boolean> reads = new LinkedHashMap<>();
 			value.collectNames(reads);
-			if (!names.containsAll(reads.keySet()))
+			if (!names.containsAll(reads.keySet())) {
 				continue;
+			}
 			boolean exact = true;
-			for (Parameter<?> parameter : parameters)
-				exact &= parameter.type().isAssignableFrom(kind.boxed);
-			if (exact)
-				variants.add(new Variant(kind, value));
-			if (names.isEmpty() && exact)
-				break;
+			for (int index = 0; index < parameters.length; index++) {
+				exact &= parameters[index].type().isAssignableFrom(kinds.get(index).boxed);
+			}
+			if (exact && CoreOptimizations.retainNumericIntrinsics(statement, intrinsics, value, null)) {
+				variants.add(new Variant(kinds, value));
+				if (names.isEmpty()) {
+					break;
+				}
+			}
 		}
 		return variants.isEmpty() ? null
-			: BytecodeCompiler.compileFunction(List.copyOf(names), conversion, emitter -> emit(emitter, names, variants));
+			: BytecodeCompiler.compileFunction(List.copyOf(names), conversion, emitter -> emit(emitter, names, variants, intrinsics));
 	}
 
-	private static void emit(BytecodeCompiler.Emitter emitter, List<String> names, List<Variant> variants) {
+	private static void emit(BytecodeCompiler.Emitter emitter, List<String> names, List<Variant> variants, Set<NumericCall> intrinsics) {
 		MethodVisitor method = emitter.method();
 		Label fallback = new Label();
+		CoreOptimizations.guardNumericIntrinsics(emitter, intrinsics, fallback);
 		for (Variant variant : variants) {
 			Label miss = new Label();
-			NumericKind kind = variant.inputKind();
-			String boxed = Type.getInternalName(kind.boxed);
 			Map<String, Slot> slots = new LinkedHashMap<>();
-			for (String name : names) {
-				int argument = names.indexOf(name) + 1;
+			for (int index = 0; index < names.size(); index++) {
+				String name = names.get(index);
+				int argument = index + 1;
+				NumericKind kind = variant.inputKinds().get(index);
+				String boxed = Type.getInternalName(kind.boxed);
 				Slot slot = new Slot(emitter, kind);
 				slots.put(name, slot);
 				method.visitVarInsn(ALOAD, argument);
@@ -120,6 +143,6 @@ public final class ScalarFunctionOptimization {
 		method.visitInsn(ARETURN);
 	}
 
-	private record Variant(NumericKind inputKind, NumericExpression value) {
+	private record Variant(List<NumericKind> inputKinds, NumericExpression value) {
 	}
 }

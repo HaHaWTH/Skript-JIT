@@ -5,6 +5,7 @@ import ch.njol.skript.lang.LoopSection;
 import ch.njol.skript.lang.TriggerItem;
 import ch.njol.skript.sections.SecLoop;
 import ch.njol.skript.sections.SecWhile;
+import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler.Emitter;
 import org.jetbrains.annotations.Nullable;
@@ -13,6 +14,7 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Type;
 
 import java.util.List;
+import java.util.Set;
 
 import static io.gunmu.skatalyst.compiler.optimize.NumericRegion.EVENT;
 import static io.gunmu.skatalyst.compiler.optimize.NumericRegion.ITEM;
@@ -26,22 +28,26 @@ final class NumericLoopOptimization {
 	}
 
 	static @Nullable BytecodeCompiler.Optimization plan(LoopSection loop) {
-		if (loop.skatalystExposesLocals()) {
+		if (loop instanceof SecLoop counted && (counted.skatalystExposesLocals()
+				|| counted.getLoopedExpression().getClass() != ExprTimes.class)) {
 			return null;
 		}
-		if (loop instanceof SecLoop counted && counted.getLoopedExpression().getClass() != ExprTimes.class) {
+		var plans = NumericRegion.plans(loop, loop.skatalystItems(), loop instanceof SecWhile w ? w.skatalystComparison() : null, null);
+		if (plans.isEmpty()) {
 			return null;
 		}
-		var plans = NumericRegion.plans(loop, loop.skatalystItems(), loop instanceof SecWhile w ? w.skatalystComparison() : null);
-		return plans.isEmpty() ? null : emitter -> emit(loop, plans, emitter);
+		Set<NumericCall> intrinsics = CoreOptimizations.numericIntrinsics(plans);
+		BytecodeCompiler.Optimization optimization = emitter -> emit(loop, plans, intrinsics, emitter);
+		return intrinsics.isEmpty() ? optimization : BytecodeCompiler.Optimization.ownedExposure(optimization);
 	}
 
-	private static void emit(LoopSection loop, List<NumericRegion> plans, Emitter emitter) {
+	private static void emit(LoopSection loop, List<NumericRegion> plans, Set<NumericCall> intrinsics, Emitter emitter) {
 		MethodVisitor method = emitter.method();
 		Label original = new Label();
 		Label miss = new Label();
 		Label complete = new Label();
 		Label done = new Label();
+		CoreOptimizations.guardNumericIntrinsics(emitter, intrinsics, original);
 		int iteration = emitter.newLocal(Type.LONG_TYPE);
 		int limit = -1;
 		if (loop instanceof SecLoop counted) {

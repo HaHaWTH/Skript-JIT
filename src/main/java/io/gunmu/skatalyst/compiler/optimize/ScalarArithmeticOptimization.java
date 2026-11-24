@@ -5,6 +5,7 @@ import ch.njol.skript.effects.EffChange;
 import ch.njol.skript.expressions.arithmetic.ExprArithmetic;
 import ch.njol.skript.lang.TriggerItem;
 import ch.njol.skript.sections.SecConditional;
+import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler.Emitter;
 import org.jetbrains.annotations.Nullable;
@@ -14,6 +15,7 @@ import org.objectweb.asm.Type;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static io.gunmu.skatalyst.compiler.optimize.NumericRegion.EVENT;
 import static io.gunmu.skatalyst.compiler.optimize.NumericRegion.ITEM;
@@ -27,17 +29,20 @@ final class ScalarArithmeticOptimization {
 		int start = 0;
 		while (start < items.size()) {
 			int end = start;
-			while (end < items.size() && end - start < NumericRegion.MAX_NODES && candidate(items.get(end))) end++;
+			while (end < items.size() && end - start < NumericRegion.MAX_NODES && candidate(items.get(end))) {
+				end++;
+			}
 			// Retain the longest prefix compatible with one set of primitive slots.
 			while (end > start) {
 				List<TriggerItem> changes = items.subList(start, end);
-				if (changes.stream().noneMatch(ScalarArithmeticOptimization::arithmetic))
+				if (changes.stream().noneMatch(ScalarArithmeticOptimization::arithmetic)) {
 					break;
+				}
 				TriggerItem following = end < items.size() ? items.get(end) : null;
 				CondCompare compare = comparison(following);
-				var plans = NumericRegion.plans(null, changes, compare);
+				var plans = NumericRegion.plans(null, changes, compare, compare == null ? null : following);
 				if (plans.isEmpty() && compare != null) {
-					plans = NumericRegion.plans(null, changes, null);
+					plans = NumericRegion.plans(null, changes, null, null);
 					compare = null;
 				}
 				if (!plans.isEmpty()) {
@@ -54,7 +59,7 @@ final class ScalarArithmeticOptimization {
 	}
 
 	private static boolean candidate(TriggerItem item) {
-		if (item.getClass() != EffChange.class || item.skatalystExposesLocals()) {
+		if (item.getClass() != EffChange.class || !CoreOptimizations.numericCandidate(item)) {
 			return false;
 		}
 		var change = ((EffChange) item).skatalystChange();
@@ -63,7 +68,8 @@ final class ScalarArithmeticOptimization {
 		}
 		return switch (change.mode()) {
 			case SET, ADD, REMOVE -> change.source().getClass() == ExprArithmetic.class
-				|| NumericSlots.literal(change.source()) != null || CoreOptimizations.scalarLocal(change.source()) != null;
+				|| NumericSlots.literal(change.source()) != null || CoreOptimizations.scalarLocal(change.source()) != null
+				|| CoreOptimizations.hasNumericIntrinsics(item);
 			default -> false;
 		};
 	}
@@ -72,25 +78,28 @@ final class ScalarArithmeticOptimization {
 		var change = ((EffChange) item).skatalystChange();
 		return switch (change.mode()) {
 			case ADD, REMOVE -> true;
-			default -> change.source().getClass() == ExprArithmetic.class;
+			default -> change.source().getClass() == ExprArithmetic.class || CoreOptimizations.hasNumericIntrinsics(item);
 		};
 	}
 
 	private static @Nullable CondCompare comparison(@Nullable TriggerItem following) {
-		if (following == null || following.skatalystExposesLocals()) return null;
+		if (following == null || !CoreOptimizations.numericCandidate(following)) return null;
 		if (following.getClass() == CondCompare.class) return (CondCompare) following;
 		return following.getClass() == SecConditional.class ? ((SecConditional) following).skatalystSimpleIfComparison() : null;
 	}
 
 	private static BytecodeCompiler.Optimization plan(TriggerItem first, TriggerItem last, List<NumericRegion> plans, @Nullable TriggerItem comparison) {
-		return emitter -> {
+		Set<NumericCall> intrinsics = CoreOptimizations.numericIntrinsics(plans);
+		BytecodeCompiler.Optimization optimization = emitter -> {
 			MethodVisitor method = emitter.method();
 			Label miss = new Label();
 			Label done = new Label();
+			CoreOptimizations.guardNumericIntrinsics(emitter, intrinsics, miss);
 			NumericRegion region = plans.getFirst();
 			region.edges.forEach((item, next) -> CoreOptimizations.guardSuccessor(emitter, item, next, miss));
-			if (comparison != null)
+			if (comparison != null) {
 				CoreOptimizations.guardSuccessor(emitter, last, comparison, miss);
+			}
 			CoreOptimizations.guardScalarWrites(emitter, List.copyOf(region.writes.keySet()), miss);
 			for (NumericRegion variant : plans) {
 				Label nextKind = new Label();
@@ -125,6 +134,7 @@ final class ScalarArithmeticOptimization {
 			emitter.walkOriginal(first);
 			method.visitLabel(done);
 		};
+		return intrinsics.isEmpty() ? optimization : BytecodeCompiler.Optimization.ownedExposure(optimization);
 	}
 
 	private static void continuation(Emitter emitter, TriggerItem comparison, boolean passed) {

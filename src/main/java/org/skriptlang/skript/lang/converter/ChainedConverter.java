@@ -30,6 +30,10 @@ final class ChainedConverter<F, M, T> implements Converter<F, T> {
 		this.second = second;
 	}
 
+	boolean skatalystOpaque() {
+		return first.skatalystOpaque() || second.skatalystOpaque();
+	}
+
 	@Override
 	@Nullable
 	public T convert(F from) {

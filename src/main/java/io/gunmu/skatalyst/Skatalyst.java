@@ -6,6 +6,7 @@ import ch.njol.skript.lang.Trigger;
 import ch.njol.skript.lang.TriggerItem;
 import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.log.SkriptLogger;
+import io.gunmu.skatalyst.addon.AddonRegistry;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import io.gunmu.skatalyst.compiler.CompiledCode;
 import io.gunmu.skatalyst.compiler.DirectFunction;
@@ -137,7 +138,9 @@ public final class Skatalyst {
 					TriggerItem next = TriggerItem.skatalystStep(current, event);
 					if (code == null && next instanceof LoopSection loop && isBackedge(current, loop)) {
 						if (state == null
-							&& BACKEDGES.incrementAndGet(this) == BACKEDGE_THRESHOLD) submit(this);
+							&& BACKEDGES.incrementAndGet(this) == BACKEDGE_THRESHOLD) {
+							submit(this);
+						}
 						code = code();
 					} else if (code != null) {
 						code = code();
@@ -189,8 +192,9 @@ public final class Skatalyst {
 
 	public static void configure(boolean enabled, boolean caseInsensitive) {
 		synchronized (LIFECYCLE) {
-			if (Skatalyst.enabled == enabled && Skatalyst.caseInsensitive == caseInsensitive)
+			if (Skatalyst.enabled == enabled && Skatalyst.caseInsensitive == caseInsensitive) {
 				return;
+			}
 			Skatalyst.enabled = enabled;
 			Skatalyst.caseInsensitive = caseInsensitive;
 			clear();
@@ -208,6 +212,26 @@ public final class Skatalyst {
 		}
 	}
 
+	public static void addonRegistryChanged() {
+		synchronized (LIFECYCLE) {
+			var scopes = TRACKED.values().iterator();
+			while (scopes.hasNext()) {
+				Set<Site> sites = scopes.next();
+				sites.removeIf(site -> {
+					CompiledCode code = site.code();
+					if (code == null || code.dependenciesActive()) {
+						return false;
+					}
+					reset(site);
+					return true;
+				});
+				if (sites.isEmpty()) {
+					scopes.remove();
+				}
+			}
+		}
+	}
+
 	private static boolean isBackedge(TriggerItem previous, LoopSection loop) {
 		if (previous == loop) return true;
 		for (TriggerSection parent = previous.getParent(); parent != null; parent = parent.getParent()) {
@@ -218,8 +242,9 @@ public final class Skatalyst {
 
 	private static void submit(Site site) {
 		synchronized (LIFECYCLE) {
-			if (!enabled || site.scope == null || site.scope.stage != Scope.Stage.ACTIVE || site.state != null)
+			if (!enabled || site.scope == null || site.scope.stage != Scope.Stage.ACTIVE || site.state != null) {
 				return;
+			}
 
 			if (worker == null) {
 				worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
@@ -239,7 +264,7 @@ public final class Skatalyst {
 	}
 
 	private static Job claim(Site site) {
-		Job job = new Job(site);
+		Job job = new Job(site, AddonRegistry.generation());
 		TRACKED.computeIfAbsent(site.scope, scope -> new HashSet<>()).add(site);
 		site.state = job;
 		return job;
@@ -251,17 +276,22 @@ public final class Skatalyst {
 	}
 
 	private static void reset(Site site) {
-		if (site.state instanceof Job job && worker != null)
-			worker.remove(job);
+		Object previous = site.state;
 		Site.CALLS.set(site, 0);
 		Site.BACKEDGES.set(site, 0);
 		site.state = null;
+		if (previous instanceof Job job && worker != null) {
+			worker.remove(job);
+		} else if (previous instanceof CompiledCode code) {
+			code.retire();
+		}
 	}
 
 	private static void invalidate(Site site) {
 		Set<Site> sites = TRACKED.get(site.scope);
-		if (sites != null && sites.remove(site) && sites.isEmpty())
+		if (sites != null && sites.remove(site) && sites.isEmpty()) {
 			TRACKED.remove(site.scope);
+		}
 		reset(site);
 	}
 
@@ -283,15 +313,16 @@ public final class Skatalyst {
 		Job job;
 		synchronized (LIFECYCLE) {
 			Site site = trigger.skatalystSite();
-			if (!enabled || (site.scope != null && site.scope.stage == Scope.Stage.CLOSED))
+			if (!enabled || (site.scope != null && site.scope.stage == Scope.Stage.CLOSED)) {
 				return false;
+			}
 			reset(site);
 			job = claim(site);
 		}
 		return job.compile(compiler);
 	}
 
-	private record Job(Site site) implements Runnable {
+	private record Job(Site site, long generation) implements Runnable {
 		@Override
 		public void run() {
 			compile(() -> BytecodeCompiler.compile(site.trigger));
@@ -307,8 +338,19 @@ public final class Skatalyst {
 				Skript.debug("Skatalyst compilation failed for " + site.trigger.getDebugLabel() + ": " + failure);
 			} finally {
 				synchronized (LIFECYCLE) {
+					boolean published = false;
 					if (site.state == this) {
-						site.state = code == null || code.isEmpty() ? REJECTED : code;
+						if (generation != AddonRegistry.generation() || (code != null && !code.dependenciesActive())) {
+							invalidate(site);
+						} else if (code == null || code.isEmpty()) {
+							site.state = REJECTED;
+						} else {
+							site.state = code;
+							published = true;
+						}
+					}
+					if (!published && code != null) {
+						code.retire();
 					}
 				}
 			}

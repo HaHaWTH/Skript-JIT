@@ -2,6 +2,7 @@ package org.skriptlang.skript.registration;
 
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableSet;
+import io.gunmu.skatalyst.addon.AddonRegistry;
 import org.jetbrains.annotations.Unmodifiable;
 import org.skriptlang.skript.docs.Origin;
 
@@ -22,8 +23,10 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 	}
 
 	@Override
-	public <I extends SyntaxInfo<?>> void register(Key<I> key, I info) {
-		register(key).add(info);
+	public synchronized <I extends SyntaxInfo<?>> void register(Key<I> key, I info) {
+		if (register(key).add(info)) {
+			AddonRegistry.syntaxRegistered(info);
+		}
 		if (key instanceof ChildKey) {
 			register(((ChildKey<? extends I, I>) key).parent(), info);
 		}
@@ -31,15 +34,18 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 
 	@Override
 	@SuppressWarnings({"unchecked", "rawtypes"})
-	public void unregister(SyntaxInfo info) {
+	public synchronized void unregister(SyntaxInfo info) {
 		for (Key key : registers.keySet()) {
 			unregister(key, info);
 		}
 	}
 
 	@Override
-	public <I extends SyntaxInfo<?>> void unregister(Key<I> key, I info) {
-		register(key).remove(info);
+	public synchronized <I extends SyntaxInfo<?>> void unregister(Key<I> key, I info) {
+		I registered = register(key).remove(info);
+		if (registered != null) {
+			AddonRegistry.syntaxUnregistered(registered);
+		}
 		if (key instanceof ChildKey) {
 			unregister(((ChildKey<? extends I, I>) key).parent(), info);
 		}
@@ -78,21 +84,22 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 
 		@Override
 		public <I extends SyntaxInfo<?>> void register(Key<I> key, I info) {
-			if (info.origin() == Origin.UNKNOWN) { // when origin is unspecified, add one
-				//noinspection unchecked
-				info = (I) info.toBuilder().origin(origin).build();
-			}
-			syntaxRegistry.register(key, info);
+			syntaxRegistry.register(key, applyOrigin(info));
 		}
 
 		@Override
 		public void unregister(SyntaxInfo<?> info) {
-			syntaxRegistry.unregister(info);
+			syntaxRegistry.unregister(applyOrigin(info));
 		}
 
 		@Override
 		public <I extends SyntaxInfo<?>> void unregister(Key<I> key, I info) {
-			syntaxRegistry.unregister(key, info);
+			syntaxRegistry.unregister(key, applyOrigin(info));
+		}
+
+		@SuppressWarnings("unchecked")
+		private <I extends SyntaxInfo<?>> I applyOrigin(I info) {
+			return info.origin() == Origin.UNKNOWN ? (I) info.toBuilder().origin(origin).build() : info;
 		}
 
 		@Override
