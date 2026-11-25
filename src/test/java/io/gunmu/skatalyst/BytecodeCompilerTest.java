@@ -12,8 +12,10 @@ import org.bukkit.event.HandlerList;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.Test;
+import org.objectweb.asm.Type;
 import org.skriptlang.skript.lang.script.Script;
 
+import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -33,7 +35,10 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
+import static org.objectweb.asm.Opcodes.ARETURN;
+import static org.objectweb.asm.Opcodes.INVOKESTATIC;
 import static org.objectweb.asm.Opcodes.NOP;
+import static org.objectweb.asm.Opcodes.POP;
 
 public class BytecodeCompilerTest {
 
@@ -57,6 +62,49 @@ public class BytecodeCompilerTest {
 		RecordingEvent fromInterior = new RecordingEvent();
 		assertNull(resume.walk(fromInterior));
 		assertEquals(List.of("second", "third"), fromInterior.trace);
+	}
+
+	@Test
+	public void poolsLocalNamesByValueAndPreservesScriptConstantIdentity() {
+		String name = new String("total");
+		String equalName = new String("total");
+		List<String> writes = List.of(name, "i");
+		List<String> equalWrites = List.of(equalName, "i");
+		List<String> reversedWrites = List.of("i", name);
+		var function = BytecodeCompiler.compileFunction(List.of(), null, emitter -> {
+			var method = emitter.method();
+			emitter.loadLocalName(name);
+			method.visitInsn(POP);
+			emitter.loadLocalName(equalName);
+			method.visitInsn(POP);
+			for (List<String> names : List.of(writes, equalWrites, reversedWrites)) {
+				emitter.loadScalarWriteNames(names);
+				method.visitInsn(POP);
+			}
+			emitter.loadConstant(name, Object.class);
+			method.visitInsn(POP);
+			emitter.loadConstant(equalName, Object.class);
+			method.visitInsn(POP);
+
+			// return MethodHandles.classData(MethodHandles.lookup(), "_", List.class);
+			Type lookup = Type.getType(MethodHandles.Lookup.class);
+			String handles = Type.getInternalName(MethodHandles.class);
+			method.visitMethodInsn(INVOKESTATIC, handles, "lookup", Type.getMethodDescriptor(lookup), false);
+			method.visitLdcInsn("_");
+			method.visitLdcInsn(Type.getType(List.class));
+			method.visitMethodInsn(INVOKESTATIC, handles, "classData", Type.getMethodDescriptor(Type.getType(Object.class),
+				lookup, Type.getType(String.class), Type.getType(Class.class)), false);
+			method.visitInsn(ARETURN);
+		});
+
+		var body = function.body();
+		assertNotNull(body);
+		List<?> data = (List<?>) body.invoke(null, null, null, null);
+		assertEquals(List.of(name, writes, reversedWrites, name, equalName), data);
+		assertSame(name, data.get(0));
+		assertSame(writes, data.get(1));
+		assertSame(name, data.get(3));
+		assertSame(equalName, data.get(4));
 	}
 
 	@Test

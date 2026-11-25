@@ -66,7 +66,7 @@ public final class StringConcatenationOptimization {
 			 * next = effect.getActualNext();
 			 */
 			MethodVisitor method = emitter.method();
-			emitter.loadConstant(target, String.class);
+			emitter.loadLocalName(target);
 			emitter.loadConstant(stringClass, ClassInfo.class);
 			for (Object part : parts) {
 				if (part instanceof String text) {

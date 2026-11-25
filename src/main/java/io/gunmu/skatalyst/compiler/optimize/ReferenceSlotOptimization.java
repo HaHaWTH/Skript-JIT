@@ -190,7 +190,7 @@ public final class ReferenceSlotOptimization {
 				slots.put(name, emitter.newLocal(OBJECT_TYPE));
 			for (LiveInput input : inputs) {
 				int slot = slots.get(input.name());
-				emitter.loadConstant(input.name(), String.class);
+				emitter.loadLocalName(input.name());
 				emitter.loadEvent();
 				method.visitInsn(ICONST_1);
 				method.visitMethodInsn(INVOKESTATIC, VARIABLES, "getVariable", "(" + STRING + EVENT + "Z)" + OBJECT, false);
@@ -211,7 +211,7 @@ public final class ReferenceSlotOptimization {
 			}
 			for (Assignment assignment : writes) {
 				emitter.setCurrent(assignment.effect());
-				emitter.loadConstant(assignment.target(), String.class);
+				emitter.loadLocalName(assignment.target());
 				method.visitVarInsn(ALOAD, slots.get(assignment.target()));
 				emitter.loadEvent();
 				method.visitInsn(ICONST_1);

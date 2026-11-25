@@ -156,7 +156,7 @@ public final class CoreOptimizations {
 
 	static void guardScalarWrites(BytecodeCompiler.Emitter emitter, List<String> names, Label mismatch) {
 		emitter.loadEvent();
-		emitter.loadConstant(names, List.class);
+		emitter.loadScalarWriteNames(names);
 		emitter.method().visitMethodInsn(INVOKESTATIC, Type.getInternalName(Variables.class), "skatalystCanBatchScalarWrites",
 			Type.getMethodDescriptor(Type.BOOLEAN_TYPE, Type.getType(Event.class), Type.getType(List.class)), false);
 		emitter.method().visitJumpInsn(IFEQ, mismatch);

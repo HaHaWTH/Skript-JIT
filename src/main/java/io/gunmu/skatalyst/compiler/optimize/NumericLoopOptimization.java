@@ -87,7 +87,7 @@ final class NumericLoopOptimization {
 		for (NumericRegion plan : plans) {
 			Label nextKind = new Label();
 			Label head = new Label();
-			Label advance = new Label();
+			Label advance = loop instanceof SecWhile ? head : new Label();
 			Label leave = new Label();
 			NumericRegion.Code code = plan.enter(emitter, inputs, plan == first, iteration, nextKind, advance, leave);
 			plan.cloning.guard(emitter, miss);
@@ -99,6 +99,7 @@ final class NumericLoopOptimization {
 				 *     ++iteration;
 				 *     // Execute the emitted loop body.
 				 * }
+				 * A continue jumps straight to the condition. Only normal fallthrough needs a back edge here.
 				 */
 				emitter.loadConstant(loop, SecWhile.class);
 				emitter.loadEvent();
@@ -113,23 +114,26 @@ final class NumericLoopOptimization {
 				plan.jumpIfFalse(code, leave);
 				method.visitLabel(enter);
 				increment(method, iteration);
-				plan.emitBody(code);
-				method.visitLabel(advance);
-				method.visitJumpInsn(GOTO, head);
+				if (plan.emitBody(code)) {
+					method.visitJumpInsn(GOTO, head);
+				}
 			} else {
 				/*
 				 * do {
 				 *     // Execute the emitted body for the current iteration.
 				 * } while (++iteration < limit);
+				 * Both normal fallthrough and continue reach the increment; exit jumps past it.
 				 */
 				method.visitLabel(head);
-				plan.emitBody(code);
-				method.visitLabel(advance);
-				increment(method, iteration);
-				method.visitVarInsn(LLOAD, iteration);
-				method.visitVarInsn(LLOAD, limit);
-				method.visitInsn(LCMP);
-				method.visitJumpInsn(IFLT, head);
+				boolean fallsThrough = plan.emitBody(code);
+				if (fallsThrough || plan.hasContinue) {
+					method.visitLabel(advance);
+					increment(method, iteration);
+					method.visitVarInsn(LLOAD, iteration);
+					method.visitVarInsn(LLOAD, limit);
+					method.visitInsn(LCMP);
+					method.visitJumpInsn(IFLT, head);
+				}
 			}
 			method.visitLabel(leave);
 			int cursor = code.exitCursor();

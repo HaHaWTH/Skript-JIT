@@ -54,7 +54,8 @@ final class NumericRegion {
 	private final Map<String, Boolean> initialReads = new LinkedHashMap<>();
 	private final Set<Class<?>> clonedTypes = new LinkedHashSet<>();
 	private final Set<String> possibleIntegerSources = new LinkedHashSet<>();
-	private List<Statement> body;
+	private Block body;
+	boolean hasContinue;
 	private @Nullable NumericCondition condition;
 	private int nodes;
 
@@ -178,9 +179,10 @@ final class NumericRegion {
 		} while (kinds.size() != previous);
 	}
 
-	private @Nullable List<Statement> block(List<TriggerItem> items, Set<String> defined, @Nullable TriggerItem join, boolean guardTail) {
+	private @Nullable Block block(List<TriggerItem> items, Set<String> defined, @Nullable TriggerItem join, boolean guardTail) {
 		List<Statement> statements = new ArrayList<>();
-		for (int i = 0; i < items.size(); i++) {
+		boolean fallsThrough = true;
+		for (int i = 0; i < items.size() && fallsThrough; i++) {
 			TriggerItem item = items.get(i);
 			if (++nodes > MAX_NODES) return null;
 			collectEdge(items, i, join, guardTail);
@@ -237,7 +239,7 @@ final class NumericRegion {
 						return null;
 					}
 					Set<String> armDefined = new HashSet<>(defined);
-					List<Statement> body = block(section.skatalystItems(), armDefined, after, false);
+					Block body = block(section.skatalystItems(), armDefined, after, false);
 					if (body == null) {
 						return null;
 					}
@@ -249,16 +251,21 @@ final class NumericRegion {
 					}
 				}
 				if (arms.getLast().test == null) defined.addAll(common);
+				// Without an else, failing every test always reaches the next statement.
+				fallsThrough = arms.getLast().test != null || arms.stream().anyMatch(arm -> arm.body.fallsThrough);
 				statements.add(new Branch(arms));
 			} else if (loop != null && item.getClass() == EffContinue.class && ((EffContinue) item).skatalystLoop() == loop) {
 				statements.add(code -> code.method().visitJumpInsn(GOTO, code.advance));
+				hasContinue = true;
+				fallsThrough = false;
 			} else if (loop != null && item.getClass() == EffExit.class && ((EffExit) item).skatalystTarget() == loop) {
 				statements.add(code -> code.method().visitJumpInsn(GOTO, code.leave));
+				fallsThrough = false;
 			} else {
 				return null;
 			}
 		}
-		return statements;
+		return new Block(statements, fallsThrough);
 	}
 
 	private void collectClonedSource(NumericExpression source, Set<String> defined) {
@@ -403,10 +410,9 @@ final class NumericRegion {
 		return new Code(emitter, slots, iteration, advance, leave, new LinkedHashMap<>());
 	}
 
-	void emitBody(Code code) {
-		for (Statement statement : body) {
-			statement.emit(code);
-		}
+	boolean emitBody(Code code) {
+		body.emit(code);
+		return body.fallsThrough;
 	}
 
 	void jumpIfFalse(Code code, Label failed) {
@@ -456,6 +462,14 @@ final class NumericRegion {
 
 	private interface Statement {
 		void emit(Code code);
+	}
+
+	private record Block(List<Statement> statements, boolean fallsThrough) {
+		void emit(Code code) {
+			for (Statement statement : statements) {
+				statement.emit(code);
+			}
+		}
 	}
 
 	private record Assignment(TriggerItem effect, String target, NumericExpression value) implements Statement {
@@ -534,10 +548,10 @@ final class NumericRegion {
 		}
 	}
 
-	private record Arm(@Nullable NumericCondition test, SecConditional section, List<Statement> items,
+	private record Arm(@Nullable NumericCondition test, SecConditional section, Block body,
 	                   TriggerItem join) {
 		void emit(Code code) {
-			if (items.isEmpty()) return;
+			if (body.statements.isEmpty()) return;
 			TriggerItem tail = section.skatalystItems().getLast();
 			Label ready = new Label();
 			/*
@@ -557,9 +571,7 @@ final class NumericRegion {
 				"skatalystEnterBranch", Type.getMethodDescriptor(ITEM), false);
 			code.method().visitInsn(POP);
 			code.method().visitLabel(ready);
-			for (Statement statement : items) {
-				statement.emit(code);
-			}
+			body.emit(code);
 		}
 	}
 
@@ -573,7 +585,7 @@ final class NumericRegion {
 					arm.test.jumpIfFalse(code, skip);
 				}
 				arm.emit(code);
-				if (arm != arms.getLast()) {
+				if (arm != arms.getLast() && arm.body.fallsThrough) {
 					code.method().visitJumpInsn(GOTO, done);
 				}
 				code.method().visitLabel(skip);

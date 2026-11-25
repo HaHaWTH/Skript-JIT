@@ -24,6 +24,7 @@ import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -362,6 +363,7 @@ public final class BytecodeCompiler {
 		private final List<Object> constants = new ArrayList<>();
 		private final Map<Object, Integer> constantIndices = new IdentityHashMap<>();
 		private final List<BooleanSupplier> dependencies = new ArrayList<>();
+		private @Nullable Map<Object, Integer> localNameIndices;
 		private int nextLocal;
 		private boolean fixedSuccessor;
 		private @Nullable TriggerItem successor;
@@ -411,7 +413,28 @@ public final class BytecodeCompiler {
 		}
 
 		public void loadConstant(Object value, Class<?> type) {
-			int index = constantIndices.computeIfAbsent(value, ignored -> {
+			loadConstant(value, type, constantIndices);
+		}
+
+		public void loadLocalName(String name) {
+			loadLocalNameConstant(name, String.class);
+		}
+
+		/**
+		 * Loads an immutable list of local variable names used by a write guard.
+		 */
+		public void loadScalarWriteNames(List<String> names) {
+			loadLocalNameConstant(names, List.class);
+		}
+
+		private void loadLocalNameConstant(Object value, Class<?> type) {
+			// Local variable lookups and write guards use the contents of these keys.
+			if (localNameIndices == null) localNameIndices = new HashMap<>();
+			loadConstant(value, type, localNameIndices);
+		}
+
+		private void loadConstant(Object value, Class<?> type, Map<Object, Integer> indices) {
+			int index = indices.computeIfAbsent(value, ignored -> {
 				int nextIndex = constants.size();
 				constants.add(value);
 				return nextIndex;

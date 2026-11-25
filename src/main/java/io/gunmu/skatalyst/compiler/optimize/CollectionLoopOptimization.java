@@ -131,7 +131,7 @@ final class CollectionLoopOptimization {
 			method.visitVarInsn(ASTORE, current);
 			for (Copy copy : copies) {
 				emitter.setCurrent(copy.item());
-				emitter.loadConstant(copy.name(), String.class);
+				emitter.loadLocalName(copy.name());
 				method.visitVarInsn(ALOAD, current);
 				method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(Classes.class), "clone", "(Ljava/lang/Object;)Ljava/lang/Object;", false);
 				emitter.loadEvent();

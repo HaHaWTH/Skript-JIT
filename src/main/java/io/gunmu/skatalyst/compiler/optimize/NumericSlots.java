@@ -172,7 +172,7 @@ final class NumericSlots {
 	static void emitReadRaw(BytecodeCompiler.Emitter emitter, String name, int initial) {
 		// Object raw = Variables.getVariable(name, event, true);
 		MethodVisitor method = emitter.method();
-		emitter.loadConstant(name, String.class);
+		emitter.loadLocalName(name);
 		emitter.loadEvent();
 		method.visitInsn(ICONST_1);
 		method.visitMethodInsn(INVOKESTATIC, VARIABLES, "getVariable",
@@ -227,7 +227,7 @@ final class NumericSlots {
 			Label clean = new Label();
 			method.visitVarInsn(ILOAD, slot.dirty());
 			method.visitJumpInsn(IFEQ, clean);
-			emitter.loadConstant(entry.getKey(), String.class);
+			emitter.loadLocalName(entry.getKey());
 			slot.loadBox(method, entry.getValue());
 			emitter.loadEvent();
 			method.visitInsn(ICONST_1);
