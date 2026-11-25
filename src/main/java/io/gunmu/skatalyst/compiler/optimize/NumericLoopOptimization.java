@@ -51,6 +51,18 @@ final class NumericLoopOptimization {
 		int iteration = emitter.newLocal(Type.LONG_TYPE);
 		int limit = -1;
 		if (loop instanceof SecLoop counted) {
+			/*
+			 * if (counted.skatalystHasIterator(event)) {
+			 *     next = TriggerItem.skatalystStep(counted, event);
+			 *     break dispatch;
+			 * }
+			 * long limit = times.skatalystExclusiveLimit(event);
+			 * long iteration = 1L;
+			 * if (iteration >= limit) {
+			 *     next = counted.getActualNext();
+			 *     break dispatch;
+			 * }
+			 */
 			emitter.loadConstant(loop, SecLoop.class);
 			emitter.loadEvent();
 			method.visitMethodInsn(INVOKEVIRTUAL, LOOP, "skatalystHasIterator", Type.getMethodDescriptor(Type.BOOLEAN_TYPE, EVENT), false);
@@ -71,13 +83,23 @@ final class NumericLoopOptimization {
 		NumericRegion first = plans.getFirst();
 		first.edges.forEach((item, next) -> CoreOptimizations.guardSuccessor(emitter, item, next, miss));
 		CoreOptimizations.guardScalarWrites(emitter, List.copyOf(first.writes.keySet()), miss);
+		var inputs = NumericRegion.sharedInputs(plans, emitter);
 		for (NumericRegion plan : plans) {
 			Label nextKind = new Label();
 			Label head = new Label();
 			Label advance = new Label();
 			Label leave = new Label();
-			NumericRegion.Code code = plan.enter(emitter, iteration, nextKind, advance, leave);
+			NumericRegion.Code code = plan.enter(emitter, inputs, plan == first, iteration, nextKind, advance, leave);
+			plan.cloning.guard(emitter, miss);
 			if (loop instanceof SecWhile) {
+				/*
+				 * long iteration = whileLoop.skatalystCompletedIterations(event);
+				 * for (boolean first = whileLoop.skatalystFirstIteration(event);
+				 *      first || condition; first = false) {
+				 *     ++iteration;
+				 *     // Execute the emitted loop body.
+				 * }
+				 */
 				emitter.loadConstant(loop, SecWhile.class);
 				emitter.loadEvent();
 				method.visitMethodInsn(INVOKEVIRTUAL, WHILE, "skatalystCompletedIterations", Type.getMethodDescriptor(Type.LONG_TYPE, EVENT), false);
@@ -95,6 +117,11 @@ final class NumericLoopOptimization {
 				method.visitLabel(advance);
 				method.visitJumpInsn(GOTO, head);
 			} else {
+				/*
+				 * do {
+				 *     // Execute the emitted body for the current iteration.
+				 * } while (++iteration < limit);
+				 */
 				method.visitLabel(head);
 				plan.emitBody(code);
 				method.visitLabel(advance);
@@ -107,6 +134,16 @@ final class NumericLoopOptimization {
 			method.visitLabel(leave);
 			int cursor = code.exitCursor();
 			NumericSlots.emitSpill(emitter, code.slots(), plan.writes);
+			/*
+			 * After writing back dirty locals, the counted path continues like this.
+			 * if (cursor == null) {
+			 *     next = counted.getActualNext();
+			 * } else {
+			 *     counted.skatalystResumeCounted(event, iteration, limit);
+			 *     next = cursor;
+			 * }
+			 * A while loop uses its own leave and restore methods at these two exits.
+			 */
 			method.visitVarInsn(ALOAD, cursor);
 			method.visitJumpInsn(IFNULL, complete);
 			if (loop instanceof SecWhile) {
@@ -121,10 +158,17 @@ final class NumericLoopOptimization {
 			method.visitVarInsn(ALOAD, cursor);
 			method.visitJumpInsn(GOTO, done);
 			method.visitLabel(nextKind);
+			if (plan == first && inputs != null) {
+				inputs.readRemainingAfterMiss(emitter);
+			}
 		}
 		method.visitLabel(miss);
 		if (loop instanceof SecLoop counted) {
-			// The times bound has already been evaluated once, including any side effects
+			/*
+			 * counted.skatalystResumeCounted(event, iteration, limit);
+			 * next = firstBodyItem;
+			 * // The original body consumes the already evaluated bound.
+			 */
 			restoreCounted(emitter, counted, iteration, limit);
 			emitter.loadConstant(loop.skatalystItems().getFirst(), TriggerItem.class);
 			method.visitJumpInsn(GOTO, done);

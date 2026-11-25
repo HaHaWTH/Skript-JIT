@@ -1,6 +1,7 @@
 package io.gunmu.skatalyst.compiler.optimize;
 
 import ch.njol.skript.classes.Changer.ChangeMode;
+import ch.njol.skript.classes.ClassInfo;
 import ch.njol.skript.effects.EffChange;
 import ch.njol.skript.lang.Expression;
 import ch.njol.skript.lang.VariableString;
@@ -48,14 +49,25 @@ public final class StringConcatenationOptimization {
 		String name = CoreOptimizations.scalarLocal(change.target());
 		if (name == null) return null;
 		List<Object> parts = source.skatalystParts();
-		return parts.size() <= MAX_CONCAT_PARTS ? new Concatenation(effect, name, source.getMode(), parts) : null;
+		if (parts.size() > MAX_CONCAT_PARTS) return null;
+		ClassInfo<String> stringClass = Classes.getExactClassInfo(String.class);
+		return stringClass == null ? null : new Concatenation(effect, name, source.getMode(), parts, stringClass);
 	}
 
-	private record Concatenation(EffChange effect, String target, StringMode mode, List<Object> parts) implements BytecodeCompiler.Optimization {
+	record Concatenation(EffChange effect, String target, StringMode mode, List<Object> parts, ClassInfo<String> stringClass)
+			implements BytecodeCompiler.Optimization {
 		@Override
 		public void emit(BytecodeCompiler.Emitter emitter) {
+			/*
+			 * Example with one interpolation.
+			 * String text = prefix + formatStringPart(expression, event, mode) + suffix;
+			 * Object value = stringClass.clone(text);
+			 * Variables.setVariable(target, value, event, true);
+			 * next = effect.getActualNext();
+			 */
 			MethodVisitor method = emitter.method();
 			emitter.loadConstant(target, String.class);
+			emitter.loadConstant(stringClass, ClassInfo.class);
 			for (Object part : parts) {
 				if (part instanceof String text) {
 					emitter.loadConstant(text, String.class);
@@ -68,7 +80,7 @@ public final class StringConcatenationOptimization {
 				}
 			}
 			method.visitInvokeDynamicInsn("concat", "(" + STRING.repeat(parts.size()) + ")" + STRING, CONCAT);
-			method.visitMethodInsn(INVOKESTATIC, Type.getInternalName(Classes.class), "clone",
+			method.visitMethodInsn(INVOKEVIRTUAL, Type.getInternalName(ClassInfo.class), "clone",
 				"(" + OBJECT + ")" + OBJECT, false);
 			emitter.loadEvent();
 			method.visitInsn(ICONST_1);

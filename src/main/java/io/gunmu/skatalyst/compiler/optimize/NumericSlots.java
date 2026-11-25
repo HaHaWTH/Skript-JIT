@@ -1,5 +1,7 @@
 package io.gunmu.skatalyst.compiler.optimize;
 
+import ch.njol.skript.classes.ClassInfo;
+import ch.njol.skript.classes.Cloner;
 import ch.njol.skript.lang.Expression;
 import ch.njol.skript.lang.util.SimpleLiteral;
 import ch.njol.skript.registrations.Classes;
@@ -14,6 +16,8 @@ import org.skriptlang.skript.lang.arithmetic.Arithmetics;
 import org.skriptlang.skript.lang.arithmetic.Operation;
 import org.skriptlang.skript.lang.arithmetic.Operator;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.objectweb.asm.Opcodes.*;
@@ -46,12 +50,45 @@ final class NumericSlots {
 			return info.getSerializeAs() == null && info.getCloner() == null;
 		}
 
+		boolean writesWithoutConversion() {
+			// The builtin boxed kinds have serializers, so serializeAs cannot be set after registration.
+			return Classes.getSuperClassInfo(boxed).getSerializeAs() == null;
+		}
+
 		int loadOpcode() {
 			return type.getOpcode(ILOAD);
 		}
 
 		int storeOpcode() {
 			return type.getOpcode(ISTORE);
+		}
+	}
+
+	static final class CloneAssumptions {
+		private final List<ClassInfo<?>> infos = new ArrayList<>();
+
+		boolean requireNoCloner(Class<?> type) {
+			ClassInfo<?> info = Classes.getSuperClassInfo(type);
+			if (info.getCloner() != null) return false;
+			if (infos.stream().noneMatch(existing -> existing == info)) {
+				infos.add(info);
+			}
+			return true;
+		}
+
+		void guard(BytecodeCompiler.Emitter emitter, Label miss) {
+			/*
+			 * Each ClassInfo is the one selected for an actual RHS box when the variant was planned.
+			 * if (info.getCloner() != null) {
+			 *     break miss; // Execute the original path before committing any writes.
+			 * }
+			 */
+			for (ClassInfo<?> info : infos) {
+				emitter.loadConstant(info, ClassInfo.class);
+				emitter.method().visitMethodInsn(INVOKEVIRTUAL, Type.getInternalName(ClassInfo.class), "getCloner",
+					Type.getMethodDescriptor(Type.getType(Cloner.class)), false);
+				emitter.method().visitJumpInsn(IFNONNULL, miss);
+			}
 		}
 	}
 
@@ -70,6 +107,13 @@ final class NumericSlots {
 		}
 
 		void loadBox(MethodVisitor method, NumericKind kind) {
+			/*
+			 * Example for a long slot that retains its boxed reference.
+			 * if (boxed == null) {
+			 *     boxed = Long.valueOf(value);
+			 * }
+			 * // Leave boxed on the operand stack.
+			 */
 			Label ready = new Label();
 			if (reference >= 0) {
 				method.visitVarInsn(ALOAD, reference);
@@ -107,7 +151,12 @@ final class NumericSlots {
 	}
 
 	static void guardIntegralResult(MethodVisitor method, int left, int right, int result, Label overflow) {
-		// Both the default addition and subtraction use this promotion predicate
+		/*
+		 * The default addition and subtraction use this promotion predicate.
+		 * if (((left ^ result) & (right ^ result)) < 0L) {
+		 *     break overflow;
+		 * }
+		 */
 		method.visitVarInsn(LLOAD, left);
 		method.visitVarInsn(LLOAD, result);
 		method.visitInsn(LXOR);
@@ -120,7 +169,8 @@ final class NumericSlots {
 		method.visitJumpInsn(IFLT, overflow);
 	}
 
-	static void emitRead(BytecodeCompiler.Emitter emitter, String name, NumericKind kind, boolean acceptsInteger, Slot slot, int initial, Label miss) {
+	static void emitReadRaw(BytecodeCompiler.Emitter emitter, String name, int initial) {
+		// Object raw = Variables.getVariable(name, event, true);
 		MethodVisitor method = emitter.method();
 		emitter.loadConstant(name, String.class);
 		emitter.loadEvent();
@@ -128,6 +178,17 @@ final class NumericSlots {
 		method.visitMethodInsn(INVOKESTATIC, VARIABLES, "getVariable",
 			Type.getMethodDescriptor(OBJECT, STRING, EVENT, Type.BOOLEAN_TYPE), false);
 		method.visitVarInsn(ASTORE, initial);
+	}
+
+	static void emitUnbox(MethodVisitor method, NumericKind kind, boolean acceptsInteger, Slot slot, int initial, Label miss) {
+		/*
+		 * Example for a long slot that accepts both integral boxes and retains its reference.
+		 * if (!(raw instanceof Long) && !(raw instanceof Integer)) {
+		 *     break variant; // Follow the caller's miss label.
+		 * }
+		 * long value = ((Number) raw).longValue();
+		 * Object boxed = raw;
+		 */
 		method.visitVarInsn(ALOAD, initial);
 		method.visitTypeInsn(INSTANCEOF, Type.getInternalName(kind.boxed));
 		if (kind == NumericKind.INTEGRAL && acceptsInteger) {
@@ -151,6 +212,15 @@ final class NumericSlots {
 	}
 
 	static void emitSpill(BytecodeCompiler.Emitter emitter, Map<String, Slot> slots, Map<String, NumericKind> writes) {
+		/*
+		 * One write block per assigned slot. This example keeps the box for a long slot.
+		 * if (dirty) {
+		 *     if (boxed == null) {
+		 *         boxed = Long.valueOf(value);
+		 *     }
+		 *     Variables.setVariable(name, boxed, event, true);
+		 * }
+		 */
 		MethodVisitor method = emitter.method();
 		for (var entry : writes.entrySet()) {
 			Slot slot = slots.get(entry.getKey());

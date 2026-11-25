@@ -13,7 +13,6 @@ import ch.njol.skript.lang.KeyProviderExpression;
 import ch.njol.skript.lang.LoopSection;
 import ch.njol.skript.lang.Variable;
 import ch.njol.skript.lang.util.ConvertedExpression;
-import ch.njol.skript.registrations.Classes;
 import ch.njol.skript.sections.SecLoop;
 import io.gunmu.skatalyst.addon.ParsedBinding;
 import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
@@ -164,23 +163,21 @@ sealed interface NumericExpression {
 		return new IntrinsicCall(call, replacement.handle(), List.copyOf(operands), result, nodes);
 	}
 
-	static @Nullable NumericExpression change(ChangeMode mode, String target, @Nullable Expression<?> source,
+	record Change(NumericExpression source, NumericExpression value) { }
+
+	static @Nullable Change change(ChangeMode mode, String target, @Nullable Expression<?> source,
 			Function<String, NumericKind> kinds, @Nullable LoopSection loop, @Nullable ParsedBinding binding) {
 		if (source == null || (mode != ChangeMode.SET && mode != ChangeMode.ADD && mode != ChangeMode.REMOVE)) {
 			return null;
 		}
-		NumericExpression value = parse(source, kinds, loop, binding);
-		if (value instanceof IntrinsicCall && !IntrinsicCall.hasDefaultBeforeChange(source)) return null;
-		if (value == null || mode == ChangeMode.SET) {
-			return value;
+		NumericExpression delta = parse(source, kinds, loop, binding);
+		if (delta == null || delta instanceof IntrinsicCall && !IntrinsicCall.hasDefaultBeforeChange(source)) {
+			return null;
 		}
-		for (Class<?> type : value.possibleTypes()) {
-			if (Classes.getSuperClassInfo(type).getCloner() != null) {
-				return null;
-			}
-		}
+		if (mode == ChangeMode.SET) return new Change(delta, delta);
 		Operator operator = mode == ChangeMode.ADD ? Operator.ADDITION : Operator.SUBTRACTION;
-		return binary(operator, null, Object.class, new Read(target, kinds.apply(target), true), value);
+		NumericExpression value = binary(operator, null, Object.class, new Read(target, kinds.apply(target), true), delta);
+		return value == null ? null : new Change(delta, value);
 	}
 
 	private static @Nullable NumericExpression binary(Operator operator, @Nullable OperationInfo<?, ?, ?> parsed,

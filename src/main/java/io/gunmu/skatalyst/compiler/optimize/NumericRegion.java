@@ -14,6 +14,7 @@ import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler.Emitter;
 import io.gunmu.skatalyst.compiler.control.ComparisonOptimizations;
 import io.gunmu.skatalyst.compiler.optimize.NumericExpression.*;
+import io.gunmu.skatalyst.compiler.optimize.NumericSlots.CloneAssumptions;
 import io.gunmu.skatalyst.compiler.optimize.NumericSlots.NumericKind;
 import io.gunmu.skatalyst.compiler.optimize.NumericSlots.Slot;
 import org.jetbrains.annotations.Nullable;
@@ -34,6 +35,10 @@ import static org.objectweb.asm.Opcodes.*;
 final class NumericRegion {
 	static final int LYZK_67CT = 32;
 	static final int MAX_NODES = 32;
+	private static final int MAX_VARIANTS = 4;
+	private static final int MAX_VARIANT_NODES = 2 * MAX_NODES;
+	private static final int MAX_MIXED_SEEDS = 6;
+	private static final Type OBJECT = Type.getType(Object.class);
 	static final Type ITEM = Type.getType(TriggerItem.class);
 	static final Type EVENT = Type.getType(org.bukkit.event.Event.class);
 
@@ -41,11 +46,14 @@ final class NumericRegion {
 	final Map<String, NumericKind> writes = new LinkedHashMap<>();
 	final Map<TriggerItem, TriggerItem> edges = new LinkedHashMap<>();
 	final Set<NumericCall> intrinsics = new LinkedHashSet<>();
+	final CloneAssumptions cloning = new CloneAssumptions();
 	private final Map<String, NumericKind> kinds;
 	private final NumericKind defaultKind;
 	private final Set<String> names = new LinkedHashSet<>();
 	private final Set<String> references = new HashSet<>();
 	private final Map<String, Boolean> initialReads = new LinkedHashMap<>();
+	private final Set<Class<?>> clonedTypes = new LinkedHashSet<>();
+	private final Set<String> possibleIntegerSources = new LinkedHashSet<>();
 	private List<Statement> body;
 	private @Nullable NumericCondition condition;
 	private int nodes;
@@ -65,26 +73,66 @@ final class NumericRegion {
 				|| owner != null && !CoreOptimizations.inferNumericOperands(owner, fixedKinds)) {
 			return List.of();
 		}
-		List<NumericRegion> plans = new ArrayList<>(2);
+		List<NumericRegion> plans = new ArrayList<>(MAX_VARIANTS);
+		int emittedNodes = 0;
 		for (NumericKind kind : NumericKind.values()) {
 			NumericRegion plan = new NumericRegion(loop, kind, new HashMap<>(fixedKinds));
-			plan.inferKinds(changes);
-			Set<String> defined = new HashSet<>();
-			if (loop instanceof SecWhile && (plan.condition = plan.test(comparison, loop, defined)) == null) {
-				continue;
+			if (plan.build(items, changes, comparison, comparisonOwner) && !plan.duplicates(plans)) {
+				plans.add(plan);
+				emittedNodes += plan.nodes;
 			}
-			plan.body = plan.block(items, defined, loop, loop != null);
-			if (plan.body == null) continue;
-			if (loop == null && comparisonOwner != null && (plan.condition = plan.test(comparison, comparisonOwner, defined)) == null) {
-				continue;
+		}
+
+		// Flip exactly one incoming slot from a proven plan. Known types of other live inputs
+		// must stay fixed, only slots established by the region can be inferred again.
+		for (NumericRegion base : List.copyOf(plans)) {
+			if (base.initialReads.size() < 2) continue;
+			Map<String, NumericKind> incoming = new HashMap<>(fixedKinds);
+			base.initialReads.keySet().forEach(name -> incoming.put(name, base.kind(name)));
+			int seeds = 0;
+			for (String input : base.initialReads.keySet()) {
+				if (plans.size() == MAX_VARIANTS || emittedNodes == MAX_VARIANT_NODES) return plans;
+				if (fixedKinds.containsKey(input)) continue;
+				if (seeds++ == MAX_MIXED_SEEDS) break;
+				NumericKind kind = base.kind(input);
+				Map<String, NumericKind> assumption = new HashMap<>(incoming);
+				assumption.put(input, kind == INTEGRAL ? DECIMAL : INTEGRAL);
+				NumericRegion plan = new NumericRegion(loop, base.defaultKind, assumption);
+				if (plan.build(items, changes, comparison, comparisonOwner) && emittedNodes + plan.nodes <= MAX_VARIANT_NODES
+						&& plan.hasMixedInputs() && !plan.duplicates(plans)) {
+					plans.add(plan);
+					emittedNodes += plan.nodes;
+				}
 			}
-			if (plan.nodes > MAX_NODES || (!plans.isEmpty() && plan.names.stream()
-				.allMatch(name -> plan.kind(name) == plans.getFirst().kind(name)))) {
-				continue;
-			}
-			plans.add(plan);
 		}
 		return plans;
+	}
+
+	private boolean build(List<TriggerItem> items, List<EffChange> changes, @Nullable CondCompare comparison,
+			@Nullable TriggerItem comparisonOwner) {
+		inferKinds(changes);
+		Set<String> defined = new HashSet<>();
+		if (loop instanceof SecWhile && (condition = test(comparison, loop, defined)) == null) return false;
+		body = block(items, defined, loop, loop != null);
+		if (body == null) return false;
+		if (loop == null && comparisonOwner != null && (condition = test(comparison, comparisonOwner, defined)) == null) return false;
+		if (nodes > MAX_NODES) return false;
+		for (String name : possibleIntegerSources) {
+			if (Boolean.TRUE.equals(initialReads.get(name))) {
+				clonedTypes.add(Integer.class);
+				break;
+			}
+		}
+		return clonedTypes.stream().allMatch(cloning::requireNoCloner);
+	}
+
+	private boolean duplicates(List<NumericRegion> plans) {
+		return plans.stream().anyMatch(plan -> names.equals(plan.names)
+			&& names.stream().allMatch(name -> kind(name) == plan.kind(name)));
+	}
+
+	private boolean hasMixedInputs() {
+		return initialReads.keySet().stream().map(this::kind).distinct().limit(2).count() == 2;
 	}
 
 	private static boolean collectChanges(List<TriggerItem> items, List<EffChange> changes, Map<String, NumericKind> fixedKinds) {
@@ -119,10 +167,11 @@ final class NumericRegion {
 				var change = effect.skatalystChange();
 				String target = CoreOptimizations.scalarLocal(change.target());
 				if (target == null || kinds.containsKey(target)) continue;
-				NumericExpression value = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop,
+				var lowered = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop,
 					effect.skatalystBinding());
-				if (value != null &&
-					(value instanceof Constant || value instanceof Iteration || value instanceof IntrinsicCall || value.kind() != defaultKind)) {
+				if (lowered == null) continue;
+				NumericExpression value = lowered.value();
+				if (value instanceof Constant || value instanceof Iteration || value instanceof IntrinsicCall || value.kind() != defaultKind) {
 					kinds.put(target, value.kind());
 				}
 			}
@@ -139,15 +188,18 @@ final class NumericRegion {
 				var change = ((EffChange) item).skatalystChange();
 				String target = CoreOptimizations.scalarLocal(change.target());
 				if (target == null) return null;
-				NumericExpression value = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop,
+				var lowered = NumericExpression.change(change.mode(), target, change.source(), this::kind, loop,
 					item.skatalystBinding());
+				if (lowered == null) return null;
+				NumericExpression value = lowered.value();
 				NumericKind kind = kind(target);
-				if (value == null || value.kind() != kind || !kind.canStoreDirectly()
+				if (value.kind() != kind || !kind.writesWithoutConversion()
 					|| value instanceof Constant(Number value1) && value1 instanceof Integer) {
 					return null;
 				}
 				if (!CoreOptimizations.retainNumericIntrinsics(item, intrinsics, value, null)) return null;
 				nodes += value.nodes() - 1;
+				collectClonedSource(lowered.source(), defined);
 				read(value, defined, value instanceof Read);
 				if (value instanceof Constant || value instanceof Read) {
 					references.add(target);
@@ -209,6 +261,18 @@ final class NumericRegion {
 		return statements;
 	}
 
+	private void collectClonedSource(NumericExpression source, Set<String> defined) {
+		if (source instanceof Read read) {
+			clonedTypes.add(read.kind().boxed);
+			// Incoming integral reads may admit Integerand writes performed by this region produce Long.
+			if (read.acceptsInteger() && !defined.contains(read.name())) {
+				possibleIntegerSources.add(read.name());
+			}
+		} else {
+			clonedTypes.addAll(source.possibleTypes());
+		}
+	}
+
 	private void collectEdge(List<TriggerItem> items, int i, @Nullable TriggerItem join, boolean guardTail) {
 		if (i + 1 < items.size()) {
 			edges.put(items.get(i), items.get(i + 1));
@@ -267,17 +331,65 @@ final class NumericRegion {
 		return value instanceof Constant constant ? constant.value().getClass() : value.kind().boxed;
 	}
 
-	Code enter(Emitter emitter, int iteration, Label miss, Label advance, Label leave) {
+	static @Nullable SharedInputs sharedInputs(List<NumericRegion> plans, Emitter emitter) {
+		if (plans.size() == 1) return null;
+		Map<String, Integer> values = new LinkedHashMap<>();
+		Map<String, Label> captured = new HashMap<>();
+		for (NumericRegion plan : plans) {
+			for (String name : plan.names) {
+				if (plan.initialReads.containsKey(name) && !values.containsKey(name)) {
+					values.put(name, emitter.newLocal(OBJECT));
+					if (plan == plans.getFirst()) {
+						captured.put(name, new Label());
+					}
+				}
+			}
+		}
+		return new SharedInputs(values, captured);
+	}
+
+	record SharedInputs(Map<String, Integer> values, Map<String, Label> captured) {
+		void readRemainingAfterMiss(Emitter emitter) {
+			/*
+			 * For two guarded inputs, the first miss label precedes the read below.
+			 * The second miss label follows it because that guard already read rawB.
+			 *
+			 * missingB: {
+			 *     rawB = Variables.getVariable("b", event, true);
+			 * }
+			 * // Try the next variant with rawA and rawB already set.
+			 */
+			boolean reachedMiss = false;
+			for (var input : values.entrySet()) {
+				if (reachedMiss) {
+					NumericSlots.emitReadRaw(emitter, input.getKey(), input.getValue());
+				}
+				Label missed = captured.get(input.getKey());
+				if (missed != null) {
+					emitter.method().visitLabel(missed);
+					reachedMiss = true;
+				}
+			}
+		}
+	}
+
+	Code enter(Emitter emitter, @Nullable SharedInputs inputs, boolean firstVariant,
+			int iteration, Label miss, Label advance, Label leave) {
 		Map<String, Slot> slots = new LinkedHashMap<>();
 		MethodVisitor method = emitter.method();
-		int initial = emitter.newLocal(Type.getType(Object.class));
+		int temporary = inputs == null ? emitter.newLocal(OBJECT) : -1;
 		for (String name : names) {
 			NumericKind kind = kind(name);
 			Slot slot = new Slot(emitter, kind, references.contains(name));
 			slots.put(name, slot);
 			Boolean integer = initialReads.get(name);
 			if (integer != null) {
-				NumericSlots.emitRead(emitter, name, kind, integer, slot, initial, miss);
+				int local = inputs == null ? temporary : inputs.values.get(name);
+				if (firstVariant) {
+					NumericSlots.emitReadRaw(emitter, name, local);
+				}
+				Label guardMiss = inputs != null && firstVariant ? inputs.captured.get(name) : miss;
+				NumericSlots.emitUnbox(method, kind, integer, slot, local, guardMiss);
 			} else {
 				method.visitInsn(kind == INTEGRAL ? LCONST_0 : DCONST_0);
 				method.visitVarInsn(kind.storeOpcode(), slot.value());
@@ -321,6 +433,11 @@ final class NumericRegion {
 		}
 
 		int exitCursor() {
+			/*
+			 * TriggerItem cursor = null; // Normal completion, including exit loop.
+			 * // Each side-exit label instead stores its exact original TriggerItem.
+			 * // Both paths join before the caller writes back dirty slots.
+			 */
 			MethodVisitor method = method();
 			Label spill = new Label();
 			method.visitInsn(ACONST_NULL);
@@ -348,6 +465,12 @@ final class NumericRegion {
 			MethodVisitor method = code.method();
 			Label overflow = new Label();
 			if (value.needsExit()) code.exits.put(overflow, effect);
+			/*
+			 * Example for a slot with a retained box.
+			 * value = evaluatedRhs; // A failing arithmetic check exits before this store.
+			 * boxed = directReadOrLiteral ? sourceReference : null;
+			 * dirty = true;
+			 */
 			value.emit(code.emitter, code.slots, code.iteration, overflow);
 			method.visitVarInsn(value.kind().storeOpcode(), slot.value());
 			if (slot.reference() >= 0) {
@@ -372,6 +495,14 @@ final class NumericRegion {
 				ComparisonOptimizations.jumpIfLongRelation(method, failed, target);
 				return;
 			}
+			/*
+			 * Example for two Double operands when the comparison observes boxed identity.
+			 * Relation actual = Double.isNaN(leftValue) && leftBox == rightBox
+			 *     ? Relation.EQUAL : DefaultComparators.compareDoubles(leftValue, rightValue);
+			 * if (failed.isImpliedBy(actual)) {
+			 *     break condition;
+			 * }
+			 */
 			Label done = new Label();
 			if (identity) {
 				// Only NaN distinguishes boxed identity from the numeric comparator
@@ -409,7 +540,13 @@ final class NumericRegion {
 			if (items.isEmpty()) return;
 			TriggerItem tail = section.skatalystItems().getLast();
 			Label ready = new Label();
-			// TriggerSection.setNext also retargets its last child recursively
+			/*
+			 * if (tail instanceof TriggerSection || tail.getActualNext() != join) {
+			 *     section.skatalystEnterBranch();
+			 * }
+			 * The compiler knows when the tail is a section and emits the enter call directly.
+			 * Entering the branch also retargets any child items of a section tail.
+			 */
 			if (!(tail instanceof TriggerSection)) {
 				code.emitter.loadActualNext(tail);
 				code.emitter.loadConstant(join, TriggerItem.class);

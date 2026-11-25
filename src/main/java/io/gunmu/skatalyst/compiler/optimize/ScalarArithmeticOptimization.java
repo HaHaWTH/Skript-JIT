@@ -101,16 +101,27 @@ final class ScalarArithmeticOptimization {
 				CoreOptimizations.guardSuccessor(emitter, last, comparison, miss);
 			}
 			CoreOptimizations.guardScalarWrites(emitter, List.copyOf(region.writes.keySet()), miss);
+			var inputs = NumericRegion.sharedInputs(plans, emitter);
 			for (NumericRegion variant : plans) {
 				Label nextKind = new Label();
-				var code = variant.enter(emitter, -1, nextKind, null, null);
+				var code = variant.enter(emitter, inputs, variant == region, -1, nextKind, null, null);
+				variant.cloning.guard(emitter, miss);
 				variant.emitBody(code);
 				int cursor = code.exitCursor();
 				NumericSlots.emitSpill(emitter, code.slots(), variant.writes);
 				Label finished = new Label();
+				/*
+				 * if (cursor == first) {
+				 *     next = TriggerItem.skatalystStep(first, event);
+				 * } else if (cursor != null) {
+				 *     next = cursor;
+				 * } else {
+				 *     // Use the successor of the last assignment or the fused comparison.
+				 * }
+				 * Stepping the first item prevents a retry of the same overflowing region.
+				 */
 				method.visitVarInsn(ALOAD, cursor);
 				method.visitJumpInsn(IFNULL, finished);
-				// Re-entering this region at its own first overflowing change would retry it forever.
 				method.visitVarInsn(ALOAD, cursor);
 				emitter.loadConstant(first, TriggerItem.class);
 				method.visitJumpInsn(IF_ACMPEQ, miss);
@@ -129,6 +140,9 @@ final class ScalarArithmeticOptimization {
 				}
 				method.visitJumpInsn(GOTO, done);
 				method.visitLabel(nextKind);
+				if (variant == region && inputs != null) {
+					inputs.readRemainingAfterMiss(emitter);
+				}
 			}
 			method.visitLabel(miss);
 			emitter.walkOriginal(first);
@@ -138,6 +152,15 @@ final class ScalarArithmeticOptimization {
 	}
 
 	private static void continuation(Emitter emitter, TriggerItem comparison, boolean passed) {
+		/*
+		 * The comparison kind and pass flag are fixed during emission.
+		 * if (comparison instanceof CondCompare condition) {
+		 *     next = condition.skatalystContinuation(event, passed);
+		 * } else {
+		 *     SecConditional section = (SecConditional) comparison;
+		 *     next = passed ? section.skatalystEnterBranch() : section.getActualNext();
+		 * }
+		 */
 		if (comparison instanceof CondCompare) {
 			emitter.loadConstant(comparison, CondCompare.class);
 			emitter.loadEvent();
