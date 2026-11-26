@@ -5,6 +5,7 @@ import ch.njol.skript.config.Node;
 import ch.njol.skript.config.SectionNode;
 import ch.njol.skript.config.SimpleNode;
 import ch.njol.skript.lang.*;
+import ch.njol.skript.lang.il.IlManager;
 import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.skript.log.CountingLogHandler;
 import ch.njol.skript.log.LogEntry;
@@ -667,6 +668,7 @@ public class ScriptLoader {
 					parser.setInactive();
 
 					for (LoadingScriptInfo info : scripts) {
+						IlManager.finishScript(info.script);
 						untrack(info.script);
 					}
 
@@ -694,6 +696,7 @@ public class ScriptLoader {
 		List<Structure> structures = new ArrayList<>();
 		Script script = new Script(config, structures);
 		parser.setActive(script);
+		IlManager.beginScript(config);
 
 		try {
 			if (SkriptConfig.keepConfigsLoaded.value())

@@ -214,6 +214,15 @@ public class SkriptConfig {
 	public static final Option<Boolean> enableScriptCaching = new Option<>("enable script caching", false)
 			.optional(true);
 
+	/**
+	 * Whether Skript should cache the parsed form of scripts (the intermediate language / "IL") in the plugin
+	 * data directory and reuse it on the next start, skipping the expensive pattern matching for unchanged files.
+	 * Cached entries are validated against the script's content and the current parse environment; scripts are
+	 * re-parsed normally whenever this option is disabled or a cache is out of date.
+	 */
+	public static final Option<Boolean> useScriptParseCache = new Option<>("use script parse cache", true)
+			.optional(true);
+
 	public static final Option<Boolean> keepConfigsLoaded = new Option<>("keep configs loaded", false)
 			.optional(true);
 

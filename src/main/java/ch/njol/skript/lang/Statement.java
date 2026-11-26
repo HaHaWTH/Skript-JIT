@@ -3,6 +3,7 @@ package ch.njol.skript.lang;
 import ch.njol.skript.Skript;
 import ch.njol.skript.config.SectionNode;
 import ch.njol.skript.lang.function.EffFunctionCall;
+import ch.njol.skript.lang.il.IlManager;
 import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.skript.log.ParseLogHandler;
 import ch.njol.skript.log.SkriptLogger;
@@ -79,7 +80,8 @@ public abstract class Statement extends TriggerItem implements SyntaxElement {
 				};
 				statement = sectionContext.modify(node, items, () -> {
 						//noinspection unchecked,rawtypes
-						Statement parsed = (Statement) SkriptParser.parse(input, (Iterator) wrappedIterator, defaultError);
+						Statement parsed = (Statement) SkriptParser.parseIl(input, (Iterator) wrappedIterator, defaultError,
+							IlManager.Site.STATEMENT_SECTION);
 						if (parsed != null && !sectionContext.claimed()) {
 							Skript.error("The line '" + input + "' is a valid statement but cannot function as a section (:) because there is no syntax in the line to manage it.");
 							return null;
@@ -89,7 +91,8 @@ public abstract class Statement extends TriggerItem implements SyntaxElement {
 			} else {
 				statement = sectionContext.modify(null, null, () -> {
 					//noinspection unchecked,rawtypes
-					return (Statement) SkriptParser.parse(input, (Iterator) iterator, defaultError);
+					return (Statement) SkriptParser.parseIl(input, (Iterator) iterator, defaultError,
+						IlManager.Site.STATEMENT_SIMPLE);
 				});
 			}
 

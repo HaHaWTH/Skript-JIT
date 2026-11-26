@@ -4,6 +4,7 @@ import ch.njol.skript.Skript;
 import ch.njol.skript.classes.Changer.ChangeMode;
 import ch.njol.skript.conditions.base.PropertyCondition;
 import ch.njol.skript.config.Node;
+import ch.njol.skript.lang.il.IlManager;
 import ch.njol.skript.lang.simplification.Simplifiable;
 import ch.njol.skript.lang.util.SimpleExpression;
 import ch.njol.util.Kleenean;
@@ -164,8 +165,8 @@ public abstract class Condition extends Statement implements Conditional<Event>,
 		while (input.startsWith("(") && SkriptParser.next(input, 0, ParseContext.DEFAULT) == input.length())
 			input = input.substring(1, input.length() - 1);
 		var iterator = Skript.instance().syntaxRegistry().syntaxes(org.skriptlang.skript.registration.SyntaxRegistry.CONDITION).iterator();
-		//noinspection unchecked,rawtypes
-		return (Condition) SkriptParser.parse(input, (Iterator) iterator, defaultError);
+		// noinspection unchecked,rawtypes
+		return (Condition) SkriptParser.parseIl(input, (Iterator) iterator, defaultError, IlManager.Site.CONDITION);
 	}
 
 }
