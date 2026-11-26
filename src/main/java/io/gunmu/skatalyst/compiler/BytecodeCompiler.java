@@ -7,6 +7,7 @@ import ch.njol.skript.lang.TriggerSection;
 import ch.njol.skript.lang.util.ConvertedExpression;
 import io.gunmu.skatalyst.Skatalyst;
 import io.gunmu.skatalyst.compiler.control.BranchOptimizations;
+import io.gunmu.skatalyst.compiler.debug.ClassExporter;
 import io.gunmu.skatalyst.compiler.optimize.CoreOptimizations;
 import io.gunmu.skatalyst.compiler.optimize.ScalarFunctionOptimization;
 import org.bukkit.event.Event;
@@ -58,14 +59,24 @@ public final class BytecodeCompiler {
 	}
 
 	public static CompiledCode compile(Trigger trigger) {
+		return compile(trigger, ClassExporter.generation());
+	}
+
+	public static CompiledCode compile(Trigger trigger, long exportGeneration) {
+		ClassExporter.Compilation export = ClassExporter.begin(trigger, exportGeneration);
 		Map<TriggerItem, Optimization> optimizations = BranchOptimizations.plan(trigger);
 		optimizations.putAll(CoreOptimizations.plan(trigger));
-		CompiledCode code = compile(trigger, optimizations);
-		DirectFunction function = ScalarFunctionOptimization.compile(trigger);
+		CompiledCode code = compile(trigger, optimizations, export);
+		DirectFunction function = ScalarFunctionOptimization.compile(trigger, export);
 		return function == null ? code : code.withFunction(function);
 	}
 
 	public static DirectFunction compileFunction(List<String> parameters, @Nullable ConvertedExpression<?, ?> conversion, Consumer<Emitter> emit) {
+		return compileFunction(parameters, conversion, emit, null);
+	}
+
+	public static DirectFunction compileFunction(List<String> parameters, @Nullable ConvertedExpression<?, ?> conversion,
+												 Consumer<Emitter> emit, ClassExporter.@Nullable Compilation export) {
 		ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
 		writer.visit(V21, ACC_FINAL | ACC_SUPER, "io/gunmu/skatalyst/compiler/CompiledScalarFunction", null,
 			"java/lang/Object", new String[]{Type.getInternalName(DirectFunction.Body.class)});
@@ -81,11 +92,16 @@ public final class BytecodeCompiler {
 		method.visitMaxs(0, 0);
 		method.visitEnd();
 		writer.visitEnd();
-		return new DirectFunction(parameters, (DirectFunction.Body) link(writer, emitter.constants), conversion,
+		return new DirectFunction(parameters, (DirectFunction.Body) link(writer, emitter.constants, export, true), conversion,
 			List.copyOf(emitter.dependencies));
 	}
 
 	public static CompiledCode compile(Trigger trigger, Map<TriggerItem, Optimization> optimizations) {
+		return compile(trigger, optimizations, ClassExporter.begin(trigger, ClassExporter.generation()));
+	}
+
+	private static CompiledCode compile(Trigger trigger, Map<TriggerItem, Optimization> optimizations,
+										ClassExporter.@Nullable Compilation export) {
 		List<Item> items = new ArrayList<>();
 		Set<TriggerItem> visited = Collections.newSetFromMap(new IdentityHashMap<>());
 		collect(trigger, null, null, null, items, visited);
@@ -97,7 +113,7 @@ public final class BytecodeCompiler {
 			MethodHandle walkHandle = TriggerItem.skatalystWalkHandle();
 			for (int start = 0; start < items.size(); start += CHUNK_ITEMS) {
 				List<Item> chunkItems = items.subList(start, Math.min(start + CHUNK_ITEMS, items.size()));
-				installChunk(chunkItems, walkHandle, optimizations, optimized, entries, dependencies);
+				installChunk(chunkItems, walkHandle, optimizations, optimized, entries, dependencies, export);
 			}
 		}
 		return new CompiledCode(entries, optimized, List.copyOf(dependencies), null);
@@ -122,18 +138,18 @@ public final class BytecodeCompiler {
 
 	private static void installChunk(List<Item> items, MethodHandle walkHandle, Map<TriggerItem, Optimization> plans,
 									 Set<TriggerItem> optimized, IdentityHashMap<TriggerItem, CompiledCode.Entry> entries,
-									 Set<BooleanSupplier> dependencies) {
+									 Set<BooleanSupplier> dependencies, ClassExporter.@Nullable Compilation export) {
 		EncodedChunk encoded = encodeChunk(items, walkHandle, plans);
 		if (encoded.length() > MAX_CODE_BYTES) {
 			if (items.size() > 1) {
 				int half = items.size() / 2;
-				installChunk(items.subList(0, half), walkHandle, plans, optimized, entries, dependencies);
-				installChunk(items.subList(half, items.size()), walkHandle, plans, optimized, entries, dependencies);
+				installChunk(items.subList(0, half), walkHandle, plans, optimized, entries, dependencies, export);
+				installChunk(items.subList(half, items.size()), walkHandle, plans, optimized, entries, dependencies, export);
 				return;
 			}
 			encoded = encodeChunk(items, walkHandle, Map.of());
 		}
-		CompiledCode.Chunk chunk = encoded.link();
+		CompiledCode.Chunk chunk = encoded.link(export);
 		optimized.addAll(encoded.optimized());
 		dependencies.addAll(encoded.dependencies());
 		for (int index = 0; index < items.size(); index++) {
@@ -238,19 +254,24 @@ public final class BytecodeCompiler {
 
 	private record EncodedChunk(ClassWriter writer, List<Object> constants, List<TriggerItem> optimized,
 								List<BooleanSupplier> dependencies, int length) {
-		private CompiledCode.Chunk link() {
-			return (CompiledCode.Chunk) BytecodeCompiler.link(writer, constants);
+		private CompiledCode.Chunk link(ClassExporter.@Nullable Compilation export) {
+			return (CompiledCode.Chunk) BytecodeCompiler.link(writer, constants, export, false);
 		}
 	}
 
-	private static Object link(ClassWriter writer, List<Object> constants) {
+	private static Object link(ClassWriter writer, List<Object> constants, ClassExporter.@Nullable Compilation export,
+							   boolean scalarFunction) {
+		byte[] bytes = writer.toByteArray();
+		List<Object> classData = List.copyOf(constants);
+		Object instance;
 		try {
-			MethodHandles.Lookup hidden = MethodHandles.lookup().defineHiddenClassWithClassData(
-				writer.toByteArray(), List.copyOf(constants), true);
-			return hidden.lookupClass().getDeclaredConstructor().newInstance();
+			MethodHandles.Lookup hidden = MethodHandles.lookup().defineHiddenClassWithClassData(bytes, classData, true);
+			instance = hidden.lookupClass().getDeclaredConstructor().newInstance();
 		} catch (ReflectiveOperationException exception) {
 			throw new IllegalStateException("Could not link Skatalyst bytecode", exception);
 		}
+		if (export != null) export.write(bytes, classData, scalarFunction);
+		return instance;
 	}
 
 	private static void writeConstructor(ClassWriter writer) {

@@ -14,6 +14,7 @@ import ch.njol.skript.skcommand.SkriptCommand.SubCommand;
 import ch.njol.skript.util.Utils;
 import ch.njol.util.OpenCloseable;
 import ch.njol.util.StringUtils;
+import io.gunmu.skatalyst.compiler.debug.ClassExporter;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.jetbrains.annotations.NotNull;
@@ -102,6 +103,7 @@ class ReloadCommand extends SubCommand {
 		Aliases.clear();
 		Aliases.loadAsync().thenRun(() -> {
 			ScriptLoader.unloadScripts(ScriptLoader.getLoadedScripts());
+			ClassExporter.reset();
 			File scriptsFolder = Skript.getInstance().getScriptsFolder();
 			ScriptLoader.loadScripts(scriptsFolder, OpenCloseable.combine(redirectingLogHandler, timingLogHandler))
 				.thenAccept(info -> {
@@ -121,6 +123,7 @@ class ReloadCommand extends SubCommand {
 		reloading(sender, "scripts", redirectingLogHandler);
 
 		ScriptLoader.unloadScripts(ScriptLoader.getLoadedScripts());
+		ClassExporter.reset();
 		File scriptsFolder = Skript.getInstance().getScriptsFolder();
 		ScriptLoader.loadScripts(scriptsFolder, OpenCloseable.combine(redirectingLogHandler, timingLogHandler))
 			.thenAccept(info -> {
@@ -158,6 +161,7 @@ class ReloadCommand extends SubCommand {
 		String fileName = scriptFolder.getName();
 		reloading(sender, "scripts in folder", redirectingLogHandler, fileName);
 		ScriptLoader.unloadScripts(ScriptLoader.getScripts(scriptFolder));
+		ClassExporter.reset();
 		ScriptLoader.loadScripts(scriptFolder, OpenCloseable.combine(redirectingLogHandler, timingLogHandler))
 			.thenAccept(scriptInfo -> {
 				if (scriptInfo.files == 0) {
@@ -191,6 +195,7 @@ class ReloadCommand extends SubCommand {
 		if (script != null) {
 			ScriptLoader.unloadScript(script);
 		}
+		ClassExporter.reset();
 
 		ScriptLoader.loadScripts(scriptFile, OpenCloseable.combine(redirectingLogHandler, timingLogHandler))
 			.thenAccept(scriptInfo ->

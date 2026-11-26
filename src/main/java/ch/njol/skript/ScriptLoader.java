@@ -21,6 +21,7 @@ import ch.njol.skript.variables.HintManager;
 import ch.njol.util.OpenCloseable;
 import ch.njol.util.StringUtils;
 import io.gunmu.skatalyst.addon.ParsedBinding;
+import io.gunmu.skatalyst.compiler.debug.ClassExporter;
 import org.bukkit.Bukkit;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
@@ -1002,6 +1003,7 @@ public class ScriptLoader {
 	 */
 	public static CompletableFuture<ScriptInfo> reloadScripts(Set<Script> scripts, OpenCloseable openCloseable) {
 		unloadScripts(scripts);
+		if (!scripts.isEmpty()) ClassExporter.reset();
 
 		List<Config> configs = new ArrayList<>();
 		for (Script script : scripts) {

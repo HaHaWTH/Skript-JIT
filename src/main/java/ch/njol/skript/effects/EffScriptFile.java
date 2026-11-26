@@ -11,6 +11,7 @@ import ch.njol.skript.lang.Effect;
 import ch.njol.skript.lang.Expression;
 import ch.njol.skript.log.RedirectingLogHandler;
 import ch.njol.skript.registrations.Feature;
+import io.gunmu.skatalyst.compiler.debug.ClassExporter;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.jetbrains.annotations.Nullable;
@@ -93,29 +94,31 @@ public class EffScriptFile extends Effect {
 		RedirectingLogHandler logHandler = new RedirectingLogHandler(recipients, "").start();
 
 		if (scripts) {
+			boolean resetExport = true;
 			for (Script script : scriptExpression.getArray(event)) {
 				@Nullable File file = script.getConfig().getFile();
-				this.handle(file, script.getConfig().getFileName(), logHandler);
+				if (handle(file, script.getConfig().getFileName(), logHandler, resetExport)) {
+					resetExport = false;
+				}
 			}
 		} else {
 			String name = scriptNameExpression.getSingle(event);
-			if (name != null)
-				this.handle(ScriptLoader.getScriptFileFromName(name), name, logHandler);
+			if (name != null) {
+				handle(ScriptLoader.getScriptFileFromName(name), name, logHandler, true);
+			}
 		}
 		logHandler.close();
 	}
 
-	private void handle(@Nullable File scriptFile, @Nullable String name, OpenCloseable openCloseable) {
-		if (scriptFile == null || !scriptFile.exists())
-			return;
-		if (name == null)
-			name = scriptFile.getName();
+	// Returns true once a reload has started, so a plural effect clears the export only once.
+	private boolean handle(@Nullable File scriptFile, @Nullable String name, OpenCloseable openCloseable, boolean resetExport) {
+		if (scriptFile == null || !scriptFile.exists()) return false;
+		if (name == null) name = scriptFile.getName();
 		FileFilter filter = ScriptLoader.getDisabledScriptsFilter();
 		switch (mark) {
 			case ENABLE:
 				Script script = ScriptLoader.getScript(scriptFile);
-				if (script != null && ScriptLoader.getLoadedScripts().contains(script))
-					return;
+				if (script != null && ScriptLoader.getLoadedScripts().contains(script)) return false;
 				if (filter.accept(scriptFile)) {
 					try {
 						// TODO Central methods to be used between here and SkriptCommand should be created for
@@ -129,37 +132,26 @@ public class EffScriptFile extends Effect {
 					} catch (IOException ex) {
 						//noinspection ThrowableNotThrown
 						Skript.exception(ex, "Error while enabling script file: " + name);
-						return;
+						return false;
 					}
 				}
 
 				ScriptLoader.loadScripts(scriptFile, openCloseable);
 				break;
 			case RELOAD:
-				if (filter.accept(scriptFile))
-					return;
-
-				if (!this.unloadScripts(scriptFile)) {
-					return;
-				}
-
+				if (filter.accept(scriptFile) || !unloadScripts(scriptFile)) return false;
+				if (resetExport) ClassExporter.reset();
 				ScriptLoader.loadScripts(scriptFile, openCloseable);
-				break;
+				return true;
 			case UNLOAD:
 				if (hasReflection) { // if we don't use the new features this falls through into DISABLE
-					if (!ScriptLoader.getLoadedScriptsFilter().accept(scriptFile))
-						return;
+					if (!ScriptLoader.getLoadedScriptsFilter().accept(scriptFile)) return false;
 
 					this.unloadScripts(scriptFile);
 					break;
 				}
 			case DISABLE:
-				if (filter.accept(scriptFile))
-					return;
-
-				if (!this.unloadScripts(scriptFile)) {
-					return;
-				}
+				if (filter.accept(scriptFile) || !unloadScripts(scriptFile)) return false;
 
 				try {
 					FileUtils.move(
@@ -170,12 +162,13 @@ public class EffScriptFile extends Effect {
 				} catch (IOException ex) {
 					//noinspection ThrowableNotThrown
 					Skript.exception(ex, "Error while disabling script file: " + name);
-					return;
+					return false;
 				}
 				break;
 			default:
 				assert false;
 		}
+		return false;
 	}
 
 	private boolean unloadScripts(File file) {

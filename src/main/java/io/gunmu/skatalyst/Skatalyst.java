@@ -10,6 +10,7 @@ import io.gunmu.skatalyst.addon.AddonRegistry;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import io.gunmu.skatalyst.compiler.CompiledCode;
 import io.gunmu.skatalyst.compiler.DirectFunction;
+import io.gunmu.skatalyst.compiler.debug.ClassExporter;
 import org.bukkit.Bukkit;
 import org.bukkit.event.Event;
 import org.jetbrains.annotations.ApiStatus;
@@ -264,7 +265,7 @@ public final class Skatalyst {
 	}
 
 	private static Job claim(Site site) {
-		Job job = new Job(site, AddonRegistry.generation());
+		Job job = new Job(site, AddonRegistry.generation(), ClassExporter.generation());
 		TRACKED.computeIfAbsent(site.scope, scope -> new HashSet<>()).add(site);
 		site.state = job;
 		return job;
@@ -306,26 +307,34 @@ public final class Skatalyst {
 	}
 
 	static boolean forceCompile(Trigger trigger) {
-		return forceCompile(trigger, () -> BytecodeCompiler.compile(trigger));
+		Job job = claimForForcedCompilation(trigger);
+		return job != null && job.compile();
 	}
 
 	static boolean forceCompile(Trigger trigger, Supplier<CompiledCode> compiler) {
-		Job job;
+		Job job = claimForForcedCompilation(trigger);
+		return job != null && job.compile(compiler);
+	}
+
+	private static @Nullable Job claimForForcedCompilation(Trigger trigger) {
 		synchronized (LIFECYCLE) {
 			Site site = trigger.skatalystSite();
 			if (!enabled || (site.scope != null && site.scope.stage == Scope.Stage.CLOSED)) {
-				return false;
+				return null;
 			}
 			reset(site);
-			job = claim(site);
+			return claim(site);
 		}
-		return job.compile(compiler);
 	}
 
-	private record Job(Site site, long generation) implements Runnable {
+	private record Job(Site site, long generation, long exportGeneration) implements Runnable {
 		@Override
 		public void run() {
-			compile(() -> BytecodeCompiler.compile(site.trigger));
+			compile();
+		}
+
+		private boolean compile() {
+			return compile(() -> BytecodeCompiler.compile(site.trigger, exportGeneration));
 		}
 
 		private boolean compile(Supplier<CompiledCode> compiler) {

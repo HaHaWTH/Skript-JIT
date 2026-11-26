@@ -44,6 +44,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import io.gunmu.skatalyst.Skatalyst;
 import io.gunmu.skatalyst.addon.AddonRegistry;
+import io.gunmu.skatalyst.compiler.debug.ClassExporter;
 import org.bstats.bukkit.Metrics;
 import org.bukkit.*;
 import org.bukkit.command.CommandSender;
@@ -397,6 +398,7 @@ public final class Skript extends JavaPlugin implements Listener {
 
 		if (!getDataFolder().isDirectory())
 			getDataFolder().mkdirs();
+		ClassExporter.reset();
 
 		scriptsFolder = new File(getDataFolder(), SCRIPTSFOLDER);
 		File config = new File(getDataFolder(), "config.sk");

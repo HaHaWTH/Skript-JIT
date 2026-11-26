@@ -7,6 +7,7 @@ import ch.njol.skript.lang.util.ConvertedExpression;
 import io.gunmu.skatalyst.addon.ParsedBinding.NumericCall;
 import io.gunmu.skatalyst.compiler.BytecodeCompiler;
 import io.gunmu.skatalyst.compiler.DirectFunction;
+import io.gunmu.skatalyst.compiler.debug.ClassExporter;
 import io.gunmu.skatalyst.compiler.optimize.NumericSlots.NumericKind;
 import io.gunmu.skatalyst.compiler.optimize.NumericSlots.Slot;
 import org.jetbrains.annotations.ApiStatus;
@@ -36,7 +37,7 @@ public final class ScalarFunctionOptimization {
 	private ScalarFunctionOptimization() {
 	}
 
-	public static @Nullable DirectFunction compile(Trigger trigger) {
+	public static @Nullable DirectFunction compile(Trigger trigger, ClassExporter.@Nullable Compilation export) {
 		var signature = trigger.skatalystSite().functionSignature();
 		if (signature == null || signature.returnType() == null || signature.returnType().isArray()
 			|| trigger.skatalystItems().size() != 1 || trigger.getActualNext() != null
@@ -99,7 +100,7 @@ public final class ScalarFunctionOptimization {
 			}
 		}
 		return variants.isEmpty() ? null
-			: BytecodeCompiler.compileFunction(List.copyOf(names), conversion, emitter -> emit(emitter, names, variants, intrinsics));
+			: BytecodeCompiler.compileFunction(List.copyOf(names), conversion, emitter -> emit(emitter, names, variants, intrinsics), export);
 	}
 
 	private static void emit(BytecodeCompiler.Emitter emitter, List<String> names, List<Variant> variants, Set<NumericCall> intrinsics) {
