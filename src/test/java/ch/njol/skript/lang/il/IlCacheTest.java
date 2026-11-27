@@ -4,8 +4,11 @@ import ch.njol.skript.ScriptLoader;
 import ch.njol.skript.Skript;
 import ch.njol.skript.SkriptConfig;
 import ch.njol.skript.config.Config;
+import ch.njol.skript.lang.Effect;
 import ch.njol.skript.lang.ParseContext;
 import ch.njol.skript.lang.SkriptParser;
+import ch.njol.skript.lang.function.FunctionRegistry;
+import ch.njol.skript.log.LogEntry;
 import ch.njol.skript.log.SkriptLogger;
 import ch.njol.skript.test.runner.SkriptJUnitTest;
 import ch.njol.skript.test.runner.TestTracker;
@@ -14,9 +17,14 @@ import ch.njol.util.OpenCloseable;
 import org.bukkit.entity.Pig;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
+import org.skriptlang.skript.addon.SkriptAddon;
+import org.skriptlang.skript.docs.Origin;
 import org.skriptlang.skript.lang.script.Script;
 import org.skriptlang.skript.lang.structure.Structure;
+import org.skriptlang.skript.registration.SyntaxInfo;
+import org.skriptlang.skript.registration.SyntaxRegistry;
 
 import java.io.File;
 import java.io.IOException;
@@ -41,6 +49,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
@@ -71,8 +80,11 @@ public class IlCacheTest extends SkriptJUnitTest {
 	private static final String CONSUMER_VALUE = "il_cache_consumer_value";
 	private static final String CONSUMER_MARKER = "il_cache_consumer_marker";
 	private static final String INPUT_DIGEST_VALUE = "il_cache_input_digest_value";
+	private static SkriptAddon registrationAddon;
 
-	/** Number of generated statement groups per trigger body in {@link #replayIsFasterThanColdParse()}. */
+	/**
+	 * Number of generated statement groups per trigger body in {@link #replayIsFasterThanColdParse()}.
+	 */
 	private static final int BIG_FIXTURE_ITERATIONS = 60;
 
 	private final Path fixtureDirectory = Skript.getInstance().getDataFolder().toPath()
@@ -81,8 +93,15 @@ public class IlCacheTest extends SkriptJUnitTest {
 	private final Path bigFixtureFile = fixtureDirectory.resolve("big-fixture.sk");
 	private final Set<Path> regressionCacheFiles = new HashSet<>();
 
-	/** Failures that existed before the current test method started; only new script assertion failures fail it. */
+	/**
+	 * Failures that existed before the current test method started; only new script assertion failures fail it.
+	 */
 	private Set<String> failuresBefore;
+
+	@BeforeClass
+	public static void registerTestAddon() {
+		registrationAddon = Skript.instance().registerAddon(IlCacheTest.class, "Skript IL Cache Tests");
+	}
 
 	@Before
 	public void setUp() throws Exception {
@@ -360,7 +379,8 @@ public class IlCacheTest extends SkriptJUnitTest {
 		var entries = IlFile.load(cacheFile.toFile(), sourceHash, fingerprint);
 		assertNotNull(entries);
 		// Recreate the entry written by older builds for the failed statement at line 3.
-		String missKey = IlManager.Site.STATEMENT_SIMPLE.ordinal() + ":3:" + assignment;
+		String missKey = IlManager.cacheKey(IlManager.Site.STATEMENT_SIMPLE, 3, assignment,
+			SkriptParser.ALL_FLAGS, ParseContext.DEFAULT.ordinal());
 		entries.put(missKey, new IlManager.Entry(IlManager.STATE_MISS, null,
 			SkriptParser.ALL_FLAGS, ParseContext.DEFAULT.ordinal(), assignment));
 		IlFile.save(cacheFile.toFile(), sourceHash, fingerprint, entries);
@@ -383,6 +403,322 @@ public class IlCacheTest extends SkriptJUnitTest {
 		assertEquals("The newly resolved statement must now replay alongside its neighbour", 2,
 			delta(beforeReplay.replays(), afterReplay.replays()));
 		assertEquals(41, globalNumber(CONSUMER_VALUE).longValue());
+	}
+
+	@Test
+	public void rerecordsAStaleChildStatementWhileItsLoopReplays() throws IOException {
+		Path source = fixtureDirectory.resolve("nested-recording.sk");
+		String header = "loop 3 times";
+		String statement = "add 1 to {" + CONSUMER_VALUE + "}";
+		Files.writeString(source, "# " + UUID.randomUUID() + "\non load:\n\t" + header + ":\n\t\t" + statement + "\n");
+		Variables.setVariable(CONSUMER_VALUE, 0L, null, false);
+		Script cold = loadFile(source.toFile());
+		assertEquals(3L, globalNumber(CONSUMER_VALUE).longValue());
+		File cacheFile = trackFixtureCache(source).toFile();
+		String sourceHash = cold.getConfig().getSourceHash();
+		assertNotNull(sourceHash);
+		String environment = IlManager.environmentFingerprint();
+		String headerKey = IlManager.cacheKey(IlManager.Site.SECTION, 3, header, SkriptParser.ALL_FLAGS, ParseContext.DEFAULT.ordinal());
+		String childKey = IlManager.cacheKey(IlManager.Site.STATEMENT_SIMPLE, 4, statement, SkriptParser.ALL_FLAGS, ParseContext.DEFAULT.ordinal());
+		var entries = IlFile.load(cacheFile, sourceHash, environment);
+		assertNotNull(entries);
+		var loop = entries.get(headerKey);
+		var child = entries.get(childKey);
+		assertNotNull(loop);
+		assertNotNull(child);
+		assertEquals(IlManager.STATE_NODE, loop.state());
+		assertEquals(IlManager.STATE_NODE, child.state());
+		assertNotNull(loop.ordering());
+		entries.put(childKey, child.withOrdering(new IlSyntaxEnvironment.Ordering("unprovable child order", new int[0][])));
+		IlFile.save(cacheFile, sourceHash, environment, entries);
+
+		var before = IlManager.stats();
+		Script repaired = reloadFile(cold);
+		var after = IlManager.stats();
+		assertEquals("Only the loop header can replay", 1, after.replays() - before.replays());
+		assertEquals(before.replayFailures(), after.replayFailures());
+		assertEquals(6L, globalNumber(CONSUMER_VALUE).longValue());
+		var saved = IlFile.load(cacheFile, sourceHash, environment);
+		assertNotNull(saved);
+		var savedChild = saved.get(childKey);
+		assertNotNull("Cold parsing inside the replayed loop must publish the child again", savedChild);
+		assertEquals(IlManager.STATE_NODE, savedChild.state());
+		assertNotNull(savedChild.ordering());
+		assertEquals(loop.ordering().fingerprint(), savedChild.ordering().fingerprint());
+
+		reloadFile(repaired);
+		var next = IlManager.stats();
+		assertEquals("Both the loop and its restored child must replay", 2, next.replays() - after.replays());
+		assertEquals(after.replayFailures(), next.replayFailures());
+		assertEquals(9L, globalNumber(CONSUMER_VALUE).longValue());
+	}
+
+	@Test
+	public void aStatementSiteReplaysWhenOnlyTheRecordedEffectOrderDiffers() throws IOException {
+		Path source = fixtureDirectory.resolve("statement-scope.sk");
+		String statement = "set {" + CONSUMER_MARKER + "} to true";
+		Files.writeString(source, "# " + UUID.randomUUID() + "\non load:\n\t" + statement + "\n");
+		Script cold = loadFile(source.toFile());
+		assertEquals(Boolean.TRUE, global(CONSUMER_MARKER));
+		File cacheFile = trackFixtureCache(source).toFile();
+		String sourceHash = cold.getConfig().getSourceHash();
+		assertNotNull(sourceHash);
+		String environment = IlManager.environmentFingerprint();
+		String key = IlManager.cacheKey(IlManager.Site.STATEMENT_SIMPLE, 3, statement, SkriptParser.ALL_FLAGS, ParseContext.DEFAULT.ordinal());
+		var entries = IlFile.load(cacheFile, sourceHash, environment);
+		assertNotNull(entries);
+		var entry = entries.get(key);
+		assertNotNull(entry);
+		assertEquals(IlManager.STATE_NODE, entry.state());
+		assertNotNull(entry.ordering());
+		int[][] orders = entry.ordering().keys().clone();
+		// The v2 ordering table stores STRUCTURE, SECTION, STATEMENT, EFFECT, CONDITION, EXPRESSION.
+		int effectKey = 3;
+		assertEquals(Skript.instance().syntaxRegistry().syntaxes(SyntaxRegistry.EFFECT).size(), orders[effectKey].length);
+		orders[effectKey] = new int[0];
+		entries.put(key, entry.withOrdering(new IlSyntaxEnvironment.Ordering("different effect scope", orders)));
+		IlFile.save(cacheFile, sourceHash, environment, entries);
+
+		Variables.deleteVariable(CONSUMER_MARKER, null, false);
+		var before = IlManager.stats();
+		reloadFile(cold);
+		var after = IlManager.stats();
+		assertEquals("This site matched the STATEMENT registry", 1, after.replays() - before.replays());
+		assertEquals(before.replayFailures(), after.replayFailures());
+		assertEquals(Boolean.TRUE, global(CONSUMER_MARKER));
+	}
+
+	@Test
+	public void pluralReturnAfterProviderReloadReportsTheSameErrorAsAColdConsumer() throws IOException {
+		String name = "il_cardinality_" + UUID.randomUUID().toString().replace("-", "");
+		Path provider = fixtureDirectory.resolve("cardinality-provider.sk");
+		Path consumer = fixtureDirectory.resolve("cardinality-consumer.sk");
+		Files.writeString(provider, "function " + name + "() :: number:\n\treturn 3\n");
+		Script providerScript = loadFile(provider.toFile());
+		trackFixtureCache(provider);
+		String source = """
+			on load:
+				set {%s} to true
+				loop %s() times:
+					set {%s} to loop-value
+			""".formatted(CONSUMER_MARKER, name, CONSUMER_VALUE);
+		Files.writeString(consumer, source);
+		Script consumerScript = loadFile(consumer.toFile());
+		assertEquals(3L, globalNumber(CONSUMER_VALUE).longValue());
+		trackFixtureCache(consumer);
+		ScriptLoader.unloadScript(consumerScript);
+
+		Files.writeString(provider, "function " + name + "() :: numbers:\n\treturn 2 and 3\n");
+		reloadFile(providerScript);
+		trackFixtureCache(provider);
+		var liveSignatures = FunctionRegistry.getRegistry().getSignatures(null, name);
+		assertEquals(1, liveSignatures.size());
+		assertFalse(liveSignatures.iterator().next().isSingle());
+		clearConsumerResults();
+		long before = IlManager.stats().replays();
+		List<String> replayErrors = loadErrors(consumer);
+		assertEquals("The independent assignment must replay", 1, IlManager.stats().replays() - before);
+		assertNull("The invalid loop body must not run", global(CONSUMER_VALUE));
+		assertEquals(Boolean.TRUE, global(CONSUMER_MARKER));
+
+		ScriptLoader.unloadScript(requireLoadedScript(consumer.toFile()));
+		IlManager.setEnabledOverride(false);
+		clearConsumerResults();
+		List<String> coldErrors = loadErrors(consumer);
+		assertTrue("Expected the consumer's invalid loop bound: " + coldErrors,
+			coldErrors.stream().anyMatch(message -> message.contains(name)));
+		assertEquals(coldErrors, replayErrors);
+		assertNull(global(CONSUMER_VALUE));
+		assertEquals(Boolean.TRUE, global(CONSUMER_MARKER));
+		assertEquals(source, Files.readString(consumer));
+	}
+
+	private List<String> loadErrors(Path file) throws IOException {
+		try (var log = SkriptLogger.startRetainingLog()) {
+			loadFile(file.toFile());
+			return log.getLog().stream()
+				.filter(entry -> entry.getLevel().intValue() >= SkriptLogger.SEVERE.intValue())
+				.map(LogEntry::getMessage).toList();
+		}
+	}
+
+	@Test
+	public void replaysAChangedFunctionBodyAndReparsesWhenAnExactOverloadAppears() throws IOException {
+		String name = "il_overload_" + UUID.randomUUID().toString().replace("-", "");
+		Path provider = fixtureDirectory.resolve("overload-provider.sk");
+		Path consumer = fixtureDirectory.resolve("overload-consumer.sk");
+		String listSignature = "function " + name + "(values: ints) :: int:\n\treturn ";
+		Files.writeString(provider, listSignature + "7\n");
+		Script providerScript = loadFile(provider.toFile());
+		trackFixtureCache(provider);
+		String source = """
+			on load:
+				set {%s} to true
+				set {%s} to %s(1, 2)
+			""".formatted(CONSUMER_MARKER, CONSUMER_VALUE, name);
+		Files.writeString(consumer, source);
+		Script consumerScript = loadFile(consumer.toFile());
+		assertEquals(7L, globalNumber(CONSUMER_VALUE).longValue());
+		trackFixtureCache(consumer);
+		ScriptLoader.unloadScript(consumerScript);
+
+		Files.writeString(provider, listSignature + "9\n");
+		providerScript = reloadFile(providerScript);
+		trackFixtureCache(provider);
+		consumerScript = loadAndCheckConsumer(consumer, 9, 2);
+		ScriptLoader.unloadScript(consumerScript);
+
+		// Declare the exact overload first. Skript's duplicate check otherwise matches the existing varargs signature.
+		Files.writeString(provider, "function " + name + "(x: int, y: int) :: int:\n\treturn 13\n\n" + listSignature + "9\n");
+		reloadFile(providerScript);
+		trackFixtureCache(provider);
+		assertEquals(2, FunctionRegistry.getRegistry().getSignatures(null, name).size());
+		IlManager.setEnabledOverride(false);
+		try {
+			Script coldControl = loadAndCheckConsumer(consumer, 13, 0);
+			ScriptLoader.unloadScript(coldControl);
+		} finally {
+			IlManager.setEnabledOverride(true);
+		}
+		consumerScript = loadAndCheckConsumer(consumer, 13, 1);
+		ScriptLoader.unloadScript(consumerScript);
+		loadAndCheckConsumer(consumer, 13, 2);
+		assertEquals(source, Files.readString(consumer));
+	}
+
+	private Script loadAndCheckConsumer(Path file, long expected, long expectedReplays) throws IOException {
+		clearConsumerResults();
+		long before = IlManager.stats().replays();
+		Script script = loadFile(file.toFile());
+		assertEquals(Boolean.TRUE, global(CONSUMER_MARKER));
+		assertEquals(expected, globalNumber(CONSUMER_VALUE).longValue());
+		assertEquals("Replayed consumer statements", expectedReplays, IlManager.stats().replays() - before);
+		return script;
+	}
+
+	private static void clearConsumerResults() {
+		Variables.deleteVariable(CONSUMER_VALUE, null, false);
+		Variables.deleteVariable(CONSUMER_MARKER, null, false);
+	}
+
+	@Test
+	public void replaysTwoRegistrationsOfTheSameEffectWithTheirOwnSuppliersAndPatterns() throws IOException {
+		var registry = registrationAddon.syntaxRegistry();
+		var origin = Origin.of(registrationAddon);
+		List<String> calls = new ArrayList<>();
+		var first = SyntaxInfo.builder(IlRegistrationProbe.class).origin(origin)
+			.supplier(() -> new IlRegistrationProbe("first", calls))
+			.addPatterns("il cache unused registration pattern", "il cache first registration [:tagged]").build();
+		var second = SyntaxInfo.builder(IlRegistrationProbe.class).origin(origin)
+			.supplier(() -> new IlRegistrationProbe("second", calls))
+			.addPattern("il cache second registration").build();
+		registry.register(SyntaxRegistry.EFFECT, first);
+		registry.register(SyntaxRegistry.EFFECT, second);
+		try {
+			Path scriptFile = fixtureDirectory.resolve("registration-probes.sk");
+			Files.writeString(scriptFile, """
+				# %s
+				on load:
+					il cache first registration tagged
+					il cache second registration
+				""".formatted(UUID.randomUUID()));
+			var script = loadFile(scriptFile.toFile());
+			var expected = List.of("first/1/true", "second/0/false");
+			assertEquals(expected, calls);
+			trackFixtureCache(scriptFile);
+
+			calls.clear();
+			long before = IlManager.stats().replays();
+			script = reloadFile(script);
+			assertEquals(expected, calls);
+			assertEquals("Both exact registrations must replay", 2, IlManager.stats().replays() - before);
+
+			ScriptLoader.unloadScript(script);
+			registry.unregister(SyntaxRegistry.EFFECT, second);
+			calls.clear();
+			List<String> replayErrors = loadErrors(scriptFile);
+			assertEquals(List.of("first/1/true"), calls);
+			assertTrue("The removed effect must fail to parse: " + replayErrors,
+				replayErrors.stream().anyMatch(message -> message.contains("il cache second registration")));
+
+			ScriptLoader.unloadScript(requireLoadedScript(scriptFile.toFile()));
+			IlManager.setEnabledOverride(false);
+			calls.clear();
+			assertEquals(replayErrors, loadErrors(scriptFile));
+			assertEquals(List.of("first/1/true"), calls);
+		} finally {
+			registry.unregister(SyntaxRegistry.EFFECT, second);
+			registry.unregister(SyntaxRegistry.EFFECT, first);
+		}
+	}
+
+	@Test
+	public void sameNamedEffectsFromUnknownLoadersUseTheirOwnOriginalRegistrations() throws Exception {
+		byte[] classBytes;
+		try (var input = IlRegistrationProbe.class.getResourceAsStream("IlRegistrationProbe.class")) {
+			assertNotNull(input);
+			classBytes = input.readAllBytes();
+		}
+		class ProbeLoader extends ClassLoader {
+			ProbeLoader() {
+				super(IlRegistrationProbe.class.getClassLoader());
+			}
+
+			Class<? extends Effect> defineProbe() {
+				return defineClass(IlRegistrationProbe.class.getName(), classBytes, 0, classBytes.length).asSubclass(Effect.class);
+			}
+		}
+		var leftType = new ProbeLoader().defineProbe();
+		var rightType = new ProbeLoader().defineProbe();
+		assertEquals(IlRegistrationProbe.class.getName(), leftType.getName());
+		assertEquals(leftType.getName(), rightType.getName());
+		assertNotSame(IlRegistrationProbe.class, leftType);
+		assertNotSame(leftType, rightType);
+		assertNotSame(leftType.getClassLoader(), rightType.getClassLoader());
+		List<String> calls = new ArrayList<>();
+		var registry = registrationAddon.syntaxRegistry();
+		var owned = loaderProbe(IlRegistrationProbe.class, "owned", calls);
+		var left = loaderProbe(leftType, "left", calls);
+		var right = loaderProbe(rightType, "right", calls);
+		registry.register(SyntaxRegistry.EFFECT, owned);
+		registry.register(SyntaxRegistry.EFFECT, left);
+		registry.register(SyntaxRegistry.EFFECT, right);
+		try {
+			Path scriptFile = fixtureDirectory.resolve("loader-probes.sk");
+			Files.writeString(scriptFile, """
+				# %s
+				on load:
+					il cache loader owned
+					il cache loader left
+					il cache loader right
+				""".formatted(UUID.randomUUID()));
+			var expected = List.of("owned/0/false", "left/0/false", "right/0/false");
+			var script = loadFile(scriptFile.toFile());
+			assertEquals(expected, calls);
+			trackFixtureCache(scriptFile);
+
+			calls.clear();
+			long before = IlManager.stats().replays();
+			reloadFile(script);
+			assertEquals(expected, calls);
+			assertEquals("Only the registration owned by Skript's loader is replayable", 1, IlManager.stats().replays() - before);
+		} finally {
+			registry.unregister(SyntaxRegistry.EFFECT, right);
+			registry.unregister(SyntaxRegistry.EFFECT, left);
+			registry.unregister(SyntaxRegistry.EFFECT, owned);
+		}
+	}
+
+	private static <T extends Effect> SyntaxInfo<T> loaderProbe(Class<T> type, String name, List<String> calls)
+		throws NoSuchMethodException {
+		var constructor = type.getConstructor(String.class, List.class);
+		return SyntaxInfo.builder(type).origin(Origin.of(registrationAddon)).addPattern("il cache loader " + name).supplier(() -> {
+			try {
+				return constructor.newInstance(name, calls);
+			} catch (ReflectiveOperationException exception) {
+				throw new AssertionError(exception);
+			}
+		}).build();
 	}
 
 	@Test
@@ -546,7 +882,7 @@ public class IlCacheTest extends SkriptJUnitTest {
 			# il-cache test fixture, run id: RUN_ID
 			function il_cache_probe() :: boolean:
 				return true
-
+			
 			on load:
 				set {_il_cache_x} to 1 + 2
 				if {_il_cache_x} is 3:
@@ -557,7 +893,7 @@ public class IlCacheTest extends SkriptJUnitTest {
 				add 1 to {il_cache_load_count}
 				set {il_cache_trigger_fired} to false
 				set {il_cache_trigger_damage} to 0
-
+			
 			on damage of pig:
 				set {il_cache_trigger_fired} to il_cache_probe()
 				set {il_cache_trigger_damage} to damage
@@ -609,7 +945,7 @@ public class IlCacheTest extends SkriptJUnitTest {
 			for (Path cacheFile : regressionCacheFiles) {
 				Files.deleteIfExists(cacheFile);
 			}
-			for (String variable : new String[] {LOAD_COUNT, LOOP_VALUE, TRIGGER_FIRED, TRIGGER_DAMAGE, EXTRA_MARKER,
+			for (String variable : new String[]{LOAD_COUNT, LOOP_VALUE, TRIGGER_FIRED, TRIGGER_DAMAGE, EXTRA_MARKER,
 				MULTIPLICATION_RESULT, SUBTRACTION_RESULT, CONSUMER_VALUE, CONSUMER_MARKER, INPUT_DIGEST_VALUE}) {
 				Variables.deleteVariable(variable, null, false);
 			}

@@ -4,19 +4,26 @@ import ch.njol.skript.Skript;
 import ch.njol.skript.SkriptConfig;
 import ch.njol.skript.config.Config;
 import ch.njol.skript.config.Node;
+import ch.njol.skript.lang.SkriptParser;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
 import ch.njol.skript.lang.SyntaxElement;
+import ch.njol.skript.lang.function.Signature;
 import ch.njol.skript.lang.parser.ParserInstance;
+import ch.njol.skript.lang.il.IlFunctionDependencies.Lookup;
+import ch.njol.skript.lang.il.IlSyntaxEnvironment.Ordering;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.lang.script.Script;
 import org.skriptlang.skript.registration.SyntaxInfo;
+import org.skriptlang.skript.registration.SyntaxRegistry;
 
 import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,12 +45,18 @@ public final class IlManager {
 	 * The parse call sites that use the IL cache.
 	 */
 	public enum Site {
-		SECTION,
-		EFFECT_SECTION,
-		STATEMENT_SIMPLE,
-		STATEMENT_SECTION,
-		CONDITION,
-		EFFECT
+		SECTION(SyntaxRegistry.SECTION),
+		EFFECT_SECTION(SyntaxRegistry.SECTION),
+		STATEMENT_SIMPLE(SyntaxRegistry.STATEMENT),
+		STATEMENT_SECTION(SyntaxRegistry.STATEMENT),
+		CONDITION(SyntaxRegistry.CONDITION),
+		EFFECT(SyntaxRegistry.EFFECT);
+
+		final SyntaxRegistry.Key<?> registryKey;
+
+		Site(SyntaxRegistry.Key<?> registryKey) {
+			this.registryKey = registryKey;
+		}
 	}
 
 	/**
@@ -59,8 +72,17 @@ public final class IlManager {
 		@Nullable IlNode node,
 		int flags,
 		int parseContext,
-		String expr
+		String expr,
+		@Nullable Ordering ordering,
+		List<Lookup> functions
 	) {
+		Entry(byte state, @Nullable IlNode node, int flags, int parseContext, String expr) {
+			this(state, node, flags, parseContext, expr, null, List.of());
+		}
+
+		Entry withOrdering(Ordering current) {
+			return new Entry(state, node, flags, parseContext, expr, current, functions);
+		}
 	}
 
 	/**
@@ -137,8 +159,6 @@ public final class IlManager {
 	 * Script lifecycle
 	 */
 
-	private static volatile String environmentFingerprint;
-
 	/**
 	 * Prepares the IL cache for a script that is about to be parsed.
 	 */
@@ -150,8 +170,9 @@ public final class IlManager {
 		File file = config.getFile();
 		assert file != null;
 		try {
-			String fingerprint = environmentFingerprint();
-			IlScriptCache cache = IlScriptCache.load(file.toPath(), sourceHash, fingerprint);
+			IlSyntaxEnvironment environment = IlSyntaxEnvironment.current();
+			if (environment == null) return;
+			IlScriptCache cache = IlScriptCache.load(file.toPath(), sourceHash, environment);
 			script.addData(cache);
 			CACHE_LOADS.incrementAndGet();
 			ENTRIES_LOADED.addAndGet(cache.entryCount());
@@ -169,7 +190,7 @@ public final class IlManager {
 		script.removeData(IlScriptCache.class);
 		if (!enabled()) return;
 		try {
-			if (cache.saveIfDirty()) {
+			if (cache.environment().active() && cache.saveIfDirty()) {
 				CACHE_SAVES.incrementAndGet();
 			}
 		} catch (Exception e) {
@@ -193,12 +214,12 @@ public final class IlManager {
 	 * May variant as the JVM flags changes, but this was untested.
 	 */
 	public static String environmentFingerprint() {
-		String fingerprint = environmentFingerprint;
-		if (fingerprint == null) {
-			fingerprint = IlEnvironment.computeFingerprint();
-			environmentFingerprint = fingerprint;
-		}
-		return fingerprint;
+		return IlEnvironment.computeFingerprint();
+	}
+
+	/** Invalidates the bound syntax environment when Skript replaces the registry itself. */
+	public static void syntaxRegistryReplaced() {
+		IlSyntaxEnvironment.registryReplaced();
 	}
 
 	/*
@@ -209,16 +230,25 @@ public final class IlManager {
 	 * The state of a single recorded parse call.
 	 */
 	static final class Session {
+		final IlSyntaxEnvironment environment;
+		final int replayDepth;
 		final Map<Object, IlNode> nodes = new java.util.IdentityHashMap<>();
+		@Nullable Set<Lookup> functions;
 		boolean uncacheable = false;
+
+		Session(IlSyntaxEnvironment environment, int replayDepth) {
+			this.environment = environment;
+			this.replayDepth = replayDepth;
+		}
 	}
 
 	private static final ThreadLocal<Deque<Session>> SESSIONS = ThreadLocal.withInitial(ArrayDeque::new);
-	private static final ThreadLocal<int[]> REPLAY_DEPTH = ThreadLocal.withInitial(() -> new int[1]);
+	private static final ThreadLocal<Deque<Entry>> ACTIVE_REPLAYS = ThreadLocal.withInitial(ArrayDeque::new);
 	private static final ThreadLocal<Set<String>> REPLAYING_KEYS = ThreadLocal.withInitial(HashSet::new);
 
 	static @Nullable Session currentSession() {
-		return SESSIONS.get().peek();
+		Session session = SESSIONS.get().peek();
+		return session != null && session.replayDepth == ACTIVE_REPLAYS.get().size() ? session : null;
 	}
 
 	public static boolean isRecording() {
@@ -227,11 +257,45 @@ public final class IlManager {
 
 	private static @Nullable Session recordingSession() {
 		Session session = currentSession();
-		return session != null && !session.uncacheable && !isReplaying() ? session : null;
+		return session != null && !session.uncacheable ? session : null;
 	}
 
-	public static boolean isReplaying() {
-		return REPLAY_DEPTH.get()[0] > 0;
+	/**
+	 * Records actual function candidate queries, including misses made by losing syntax candidates.
+	 */
+	public static void observeFunctionLookup(@Nullable String namespace, String name, Set<Signature<?>> signatures) {
+		Deque<Session> sessions = SESSIONS.get();
+		Deque<Entry> replays = ACTIVE_REPLAYS.get();
+		Entry replay = replays.peek();
+		if (sessions.isEmpty() && replay == null) return;
+		Lookup lookup;
+		try {
+			lookup = IlFunctionDependencies.describe(namespace, name, signatures);
+		} catch (RuntimeException | LinkageError e) {
+			debug("Could not fingerprint function lookup " + name + ": " + e);
+			lookup = null;
+		}
+		if (replay != null) {
+			// Check the candidates actually used if the registry changed after preflight
+			if (lookup == null || !replay.functions().contains(lookup)) throw new StaleLookup();
+		}
+		int depth = replays.size();
+		for (Session session : sessions) {
+			if (session.replayDepth != depth) break;
+			if (session.uncacheable) continue;
+			if (lookup == null) {
+				session.uncacheable = true;
+			} else {
+				if (session.functions == null) session.functions = new LinkedHashSet<>();
+				session.functions.add(lookup);
+			}
+		}
+	}
+
+	private static final class StaleLookup extends RuntimeException {
+		private StaleLookup() {
+			super(null, null, false, false);
+		}
 	}
 
 
@@ -245,12 +309,14 @@ public final class IlManager {
 		final int flags;
 		final int parseContext;
 		final String key;
-		final @Nullable IlScriptCache cache;
+		final IlScriptCache cache;
 		final @Nullable Entry cached;
+		final boolean hadCachedNode;
 		@Nullable Session session;
+		boolean replayFailed;
 
 		Frame(Site site, String expr, int flags, int parseContext, String key,
-		      @Nullable IlScriptCache cache, @Nullable Entry cached) {
+			      IlScriptCache cache, @Nullable Entry cached, boolean hadCachedNode) {
 			this.site = site;
 			this.expr = expr;
 			this.flags = flags;
@@ -258,17 +324,15 @@ public final class IlManager {
 			this.key = key;
 			this.cache = cache;
 			this.cached = cached;
+			this.hadCachedNode = hadCachedNode;
 		}
 
 		public @Nullable Entry cached() {
 			return cached;
 		}
 
-		/**
-		 * @return the cache key of this site call.
-		 */
-		public String key() {
-			return key;
+		public boolean canReplay() {
+			return cache.environment().active();
 		}
 
 	}
@@ -282,13 +346,28 @@ public final class IlManager {
 			ParserInstance parser = ParserInstance.get();
 			if (!parser.isActive()) return null;
 			IlScriptCache cache = parser.getCurrentScript().getData(IlScriptCache.class);
-			if (cache == null) return null;
+			if (cache == null || !cache.environment().active()) return null;
 			Node node = parser.getNode();
 			if (node == null) return null;
 			int line = node.getLine();
 			if (line < 0) return null;
-			String key = site.ordinal() + ":" + line + ":" + expr;
-			return new Frame(site, expr, flags, parseContext, key, cache, cache.get(key));
+			String key = cacheKey(site, line, expr, flags, parseContext);
+			Entry cached = cache.get(key);
+			boolean hadCachedNode = false;
+			if (cached != null && cached.state() == STATE_NODE) {
+				hadCachedNode = true;
+				IlSyntaxEnvironment environment = cache.environment();
+				if (!valid(cached, environment, site)) {
+					cache.invalidate(key);
+					cached = null;
+				} else if (cached.ordering() != environment.ordering()) {
+					cached = cached.withOrdering(environment.ordering());
+					cache.refresh(key, cached);
+				}
+			}
+			// A cold parent must observe the complete function lookup history of its children.
+			if (currentSession() != null) cached = null;
+			return new Frame(site, expr, flags, parseContext, key, cache, cached, hadCachedNode);
 		} catch (Exception e) {
 			// the IL must never break script loading
 			debug("beginSite failed: " + e);
@@ -296,11 +375,28 @@ public final class IlManager {
 		}
 	}
 
+	static String cacheKey(Site site, int line, String expression, int flags, int parseContext) {
+		return site.ordinal() + ":" + line + ":" + flags + ":" + parseContext + ":" + expression;
+	}
+
+	private static boolean valid(Entry entry, IlSyntaxEnvironment environment, Site site) {
+		for (Lookup lookup : entry.functions()) {
+			if (!IlFunctionDependencies.matches(lookup)) return false;
+		}
+		Ordering ordering = entry.ordering();
+		return ordering != null && (ordering.fingerprint().equals(environment.ordering().fingerprint())
+			|| entry.node() != null && IlReplay.precedenceMatches(entry.node(), environment, ordering, site.registryKey));
+	}
+
 	/**
 	 * Opens a recording session for the given site call.
 	 */
 	public static void startRecording(Frame frame) {
-		Session session = new Session();
+		if (!frame.cache.environment().active()) return;
+		int replayDepth = ACTIVE_REPLAYS.get().size();
+		// Repair a previously replayable child without recording every failed candidate in a replayed section.
+		if (replayDepth != 0 && !frame.hadCachedNode) return;
+		Session session = new Session(frame.cache.environment(), replayDepth);
 		frame.session = session;
 		SESSIONS.get().push(session);
 	}
@@ -318,8 +414,7 @@ public final class IlManager {
 		frame.session = null;
 
 		IlScriptCache cache = frame.cache;
-		if (cache == null || result == null)
-			return;
+		if (result == null || !session.environment.active()) return;
 		IlNode node = session.nodes.get(result);
 		byte state = STATE_NODE;
 		if (node == null || session.uncacheable) {
@@ -327,10 +422,16 @@ public final class IlManager {
 			UNCACHEABLE.incrementAndGet();
 		}
 		try {
-			Entry entry = new Entry(state, node, frame.flags, frame.parseContext, frame.expr);
+			Entry entry = state == STATE_NODE ? new Entry(state, node, frame.flags, frame.parseContext, frame.expr,
+				session.environment.ordering(), session.functions == null ? List.of() : List.copyOf(session.functions))
+				: new Entry(state, null, frame.flags, frame.parseContext, frame.expr);
+			if (frame.replayFailed && entry.equals(frame.cached)) {
+				entry = new Entry(STATE_UNSAFE, null, frame.flags, frame.parseContext, frame.expr);
+			}
 			int status = cache.put(frame.key, entry);
 			if (status == IlScriptCache.CONFLICT) {
 				CONFLICTS.incrementAndGet();
+				cache.markDirty();
 			} else if (status == IlScriptCache.ADDED) {
 				cache.markDirty();
 			}
@@ -360,12 +461,12 @@ public final class IlManager {
 		Session session = recordingSession();
 		if (session == null) return;
 		try {
-			// A class-only IL element can identify only one exact registration.
-			if (infoFor(info.type()) != info) {
+			IlRegistration registration = session.environment.binding(info);
+			if (registration == null) {
 				session.uncacheable = true;
 				return;
 			}
-			IlNode node = IlRecorder.buildElementNode(info, patternIndex, parseResult);
+			IlNode node = IlRecorder.buildElementNode(registration, patternIndex, parseResult);
 			if (node == null) {
 				session.uncacheable = true;
 				return;
@@ -398,11 +499,14 @@ public final class IlManager {
 	 * Replays a recorded node. Returns {@code null} when the node could not be replayed.
 	 */
 	@SuppressWarnings("unchecked")
-	public static <T> @Nullable T replay(IlNode node, String key, ch.njol.skript.lang.SkriptParser parser) {
+	public static <T> @Nullable T replay(Frame frame, Entry entry, SkriptParser parser) {
+		IlNode node = entry.node();
+		assert node != null;
+		String key = frame.key;
 		Set<String> replaying = REPLAYING_KEYS.get();
 		if (!replaying.add(key)) return null; // fall back to a normal parse
-		int[] depth = REPLAY_DEPTH.get();
-		depth[0]++;
+		Deque<Entry> active = ACTIVE_REPLAYS.get();
+		active.push(entry);
 		try {
 			SyntaxElement element = IlReplay.build(node, parser);
 			if (element != null) {
@@ -412,70 +516,19 @@ public final class IlManager {
 			}
 			REPLAY_FAILURES.incrementAndGet();
 			debug("IL replay failed for entry " + key);
-			return null;
+		} catch (StaleLookup e) {
+			debug("Function lookup changed during IL replay of " + key);
 		} catch (Throwable t) {
 			REPLAY_FAILURES.incrementAndGet();
 			debug("IL replay threw for entry " + key + ": " + t);
-			return null;
 		} finally {
-			depth[0]--;
+			active.pop();
 			replaying.remove(key);
 		}
+		frame.replayFailed = true;
+		frame.cache.invalidate(key);
+		return null;
 	}
-
-	/*
-	 * Syntax registry lookup
-	 */
-
-	private static volatile Map<Class<?>, SyntaxInfo<?>> syntaxInfoByClass;
-
-	/**
-	 * Looks up the registered syntax info of a syntax element class.
-	 */
-	public static @Nullable SyntaxInfo<?> infoFor(String className) {
-		Class<?> type;
-		try {
-			type = Class.forName(className, false, IlManager.class.getClassLoader());
-		} catch (ClassNotFoundException | LinkageError e) {
-			return null;
-		}
-		return infoFor(type);
-	}
-
-	public static @Nullable SyntaxInfo<?> infoFor(Class<?> type) {
-		Map<Class<?>, SyntaxInfo<?>> map = syntaxInfoByClass;
-		if (map == null) {
-			synchronized (IlManager.class) {
-				map = syntaxInfoByClass;
-				if (map == null) {
-					map = new java.util.HashMap<>();
-					Set<Class<?>> ambiguous = new HashSet<>();
-					for (org.skriptlang.skript.registration.SyntaxRegistry.Key<?> key : REGISTRY_KEYS) {
-						for (SyntaxInfo<?> info : ch.njol.skript.Skript.instance().syntaxRegistry().syntaxes(key)) {
-							Class<?> implementation = info.type();
-							if (ambiguous.contains(implementation)) continue;
-							SyntaxInfo<?> previous = map.putIfAbsent(implementation, info);
-							if (previous != null && previous != info) {
-								map.remove(implementation);
-								ambiguous.add(implementation);
-							}
-						}
-					}
-					syntaxInfoByClass = map;
-				}
-			}
-		}
-		return map.get(type);
-	}
-
-	private static final java.util.List<org.skriptlang.skript.registration.SyntaxRegistry.Key<?>> REGISTRY_KEYS =
-		java.util.List.of(
-			org.skriptlang.skript.registration.SyntaxRegistry.STATEMENT,
-			org.skriptlang.skript.registration.SyntaxRegistry.EFFECT,
-			org.skriptlang.skript.registration.SyntaxRegistry.CONDITION,
-			org.skriptlang.skript.registration.SyntaxRegistry.SECTION,
-			org.skriptlang.skript.registration.SyntaxRegistry.EXPRESSION
-		);
 
 	public static void debug(String message) {
 		try {

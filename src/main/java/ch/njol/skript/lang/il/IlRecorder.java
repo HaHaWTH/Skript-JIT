@@ -9,7 +9,6 @@ import ch.njol.skript.lang.SkriptParser.ExprInfo;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
 import ch.njol.skript.patterns.TypePatternElement;
 import org.jetbrains.annotations.Nullable;
-import org.skriptlang.skript.registration.SyntaxInfo;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,7 +43,7 @@ final class IlRecorder {
 	 *
 	 * @return the node, or {@code null} if this element cannot be represented.
 	 */
-	static @Nullable IlNode buildElementNode(SyntaxInfo<?> info, int patternIndex, ParseResult parseResult) {
+	static @Nullable IlNode buildElementNode(IlRegistration registration, int patternIndex, ParseResult parseResult) {
 		if (parseResult.source == null)
 			return null;
 		List<TypePatternElement> slotTypes = parseResult.source.getElements(TypePatternElement.class);
@@ -86,7 +85,7 @@ final class IlRecorder {
 		}
 
 		return new IlNode.Element(
-			info.type().getName(),
+			registration,
 			patternIndex,
 			parseResult.expr,
 			parseResult.mark,

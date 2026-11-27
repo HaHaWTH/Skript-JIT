@@ -180,14 +180,27 @@ abstract class Keyword {
 	private static final class ChoiceKeyword extends Keyword {
 
 		private final Set<Set<Keyword>> choices;
+		private final Keyword[][] alternatives;
 
 		ChoiceKeyword(Set<Set<Keyword>> choices) {
 			this.choices = choices;
+			this.alternatives = new Keyword[choices.size()][];
+			int index = 0;
+			for (Set<Keyword> choice : choices) {
+				alternatives[index++] = choice.toArray(Keyword[]::new);
+			}
 		}
 
 		@Override
 		public boolean isPresent(String expr) {
-			return choices.stream().anyMatch(keywords -> keywords.stream().allMatch(keyword -> keyword.isPresent(expr)));
+			nextAlternative:
+			for (Keyword[] alternative : alternatives) {
+				for (Keyword keyword : alternative) {
+					if (!keyword.isPresent(expr)) continue nextAlternative;
+				}
+				return true;
+			}
+			return false;
 		}
 
 		@Override

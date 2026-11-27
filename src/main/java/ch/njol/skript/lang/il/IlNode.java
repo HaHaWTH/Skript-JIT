@@ -16,7 +16,7 @@ public sealed interface IlNode {
 	 * A parsed syntax element (an {@link ch.njol.skript.lang.SyntaxElement}) produced by a registered
 	 * {@link org.skriptlang.skript.registration.SyntaxInfo}.
 	 *
-	 * @param className    the binary class name of the syntax element
+	 * @param registration the exact registered syntax bound in the current environment
 	 * @param patternIndex the index of the matched pattern in the syntax info's pattern list
 	 * @param expr         the (trimmed) input text this element was parsed from
 	 * @param mark         the parse {@code mark} of the parse result
@@ -25,7 +25,7 @@ public sealed interface IlNode {
 	 * @param args         one argument per expression slot of the pattern
 	 */
 	record Element(
-		String className,
+		IlRegistration registration,
 		int patternIndex,
 		String expr,
 		int mark,
@@ -112,7 +112,8 @@ public sealed interface IlNode {
 	/**
 	 * A parsed function call expression (an {@code ExprFunctionCall}).
 	 */
-	record FunctionCall(String text, List<@Nullable String> typeNames, int flags, int parseContext) implements IlNode {
+	record FunctionCall(String text, List<@Nullable String> typeNames, int flags, int parseContext,
+						boolean requiresSingle) implements IlNode {
 	}
 
 	/**

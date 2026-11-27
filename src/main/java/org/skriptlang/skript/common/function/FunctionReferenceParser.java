@@ -8,6 +8,7 @@ import ch.njol.skript.lang.ParseContext;
 import ch.njol.skript.lang.SkriptParser;
 import ch.njol.skript.lang.function.FunctionRegistry;
 import ch.njol.skript.lang.function.Signature;
+import ch.njol.skript.lang.il.IlManager;
 import ch.njol.skript.lang.parser.ParserInstance;
 import ch.njol.skript.lang.util.SimpleLiteral;
 import ch.njol.skript.localization.ArgsMessage;
@@ -128,6 +129,7 @@ public record FunctionReferenceParser(ParseContext context, int flags) {
 
 		// try to find a matching signature to get which types to parse args with
 		Set<Signature<?>> options = FunctionRegistry.getRegistry().getSignatures(namespace, name);
+		IlManager.observeFunctionLookup(namespace, name, options);
 
 		if (options.isEmpty()) {
 			doesNotExist(name, arguments, options);

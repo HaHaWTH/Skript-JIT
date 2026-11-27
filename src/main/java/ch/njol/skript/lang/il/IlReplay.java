@@ -9,6 +9,7 @@ import ch.njol.skript.lang.LiteralList;
 import ch.njol.skript.lang.ParseContext;
 import ch.njol.skript.lang.SkriptParser;
 import ch.njol.skript.lang.SkriptParser.ParseResult;
+import ch.njol.skript.lang.il.IlSyntaxEnvironment.Ordering;
 import ch.njol.skript.lang.SyntaxElement;
 import ch.njol.skript.lang.UnparsedLiteral;
 import ch.njol.skript.lang.Variable;
@@ -22,10 +23,10 @@ import ch.njol.skript.log.SkriptLogger;
 import ch.njol.skript.registrations.Classes;
 import ch.njol.skript.util.StringMode;
 import ch.njol.util.Kleenean;
-import com.google.common.collect.Iterables;
 import org.jetbrains.annotations.Nullable;
 import org.skriptlang.skript.common.function.FunctionReference;
 import org.skriptlang.skript.registration.SyntaxInfo;
+import org.skriptlang.skript.registration.SyntaxRegistry.Key;
 
 import java.util.List;
 import java.util.regex.MatchResult;
@@ -51,11 +52,38 @@ final class IlReplay {
 		return buildElement(element, parser);
 	}
 
+	/** Revalidates lexical predecessor order before any replayed initializer can run. */
+	static boolean precedenceMatches(IlNode node, IlSyntaxEnvironment environment, Ordering ordering, @Nullable Key<?> key) {
+		return switch (node) {
+			case IlNode.Element element -> validateElementPrecedence(element, environment, ordering, key);
+			case IlNode.ListExpr list -> validateListPrecedence(list.items(), environment, ordering);
+			case IlNode.Converted converted -> precedenceMatches(converted.child(), environment, ordering, null);
+			default -> true;
+		};
+	}
+
+	private static boolean validateListPrecedence(List<IlNode> items, IlSyntaxEnvironment environment, Ordering ordering) {
+		for (IlNode item : items) {
+			if (!precedenceMatches(item, environment, ordering, null)) return false;
+		}
+		return true;
+	}
+
+	private static boolean validateElementPrecedence(IlNode.Element element, IlSyntaxEnvironment environment,
+													 Ordering ordering, @Nullable Key<?> key) {
+		if (!environment.precedesSame(element.registration(), element.expr(), ordering, key)) return false;
+		for (IlNode.Arg arg : element.args()) {
+			if (arg instanceof IlNode.Arg.Value value && !precedenceMatches(value.node(), environment, ordering, null)) return false;
+		}
+		return true;
+	}
+
 	private static @Nullable SyntaxElement buildElement(IlNode.Element element, SkriptParser parser) {
-		SyntaxInfo<?> info = IlManager.infoFor(element.className());
+		IlRegistration registration = element.registration();
+		SyntaxInfo<?> info = registration.info();
 		int index = element.patternIndex();
-		if (info == null || index < 0 || index >= info.patterns().size()) return failed();
-		var pattern = SkriptParser.getSyntaxPattern(Iterables.get(info.patterns(), index));
+		if (index < 0 || index >= registration.patternCount()) return failed();
+		var pattern = registration.pattern(index);
 		if (pattern.countTypes() != element.args().size()) return failed();
 
 		ParserInstance context = ParserInstance.get();
@@ -126,11 +154,10 @@ final class IlReplay {
 				return failed();
 			return literal;
 		}
-		if (node instanceof IlNode.FunctionCall(String text, List<String> typeNames, int flags, int parseContext)) {
+		if (node instanceof IlNode.FunctionCall(String text, List<String> typeNames, int flags, int parseContext, boolean requiresSingle)) {
 			FunctionReference<?> reference = new SkriptParser(text,
 				flags, parseContext(parseContext)).parseFunctionReference();
-			if (reference == null)
-				return failed();
+			if (reference == null || !SkriptParser.acceptsFunctionCardinality(reference, requiresSingle)) return failed();
 			Class<?>[] types = resolveClasses(typeNames);
 			if (types == null)
 				return failed();

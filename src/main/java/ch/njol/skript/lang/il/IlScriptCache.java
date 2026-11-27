@@ -23,7 +23,7 @@ final class IlScriptCache implements ScriptData {
 
 	private final File file;
 	private final String sourceHash;
-	private final String environmentFingerprint;
+	private final IlSyntaxEnvironment environment;
 	private final Map<String, IlManager.Entry> entries;
 
 	/**
@@ -32,11 +32,11 @@ final class IlScriptCache implements ScriptData {
 	private final java.util.Set<String> freshKeys = new java.util.HashSet<>();
 	private boolean dirty;
 
-	private IlScriptCache(File file, String sourceHash, String environmentFingerprint,
+	private IlScriptCache(File file, String sourceHash, IlSyntaxEnvironment environment,
 	                      Map<String, IlManager.Entry> entries) {
 		this.file = file;
 		this.sourceHash = sourceHash;
-		this.environmentFingerprint = environmentFingerprint;
+		this.environment = environment;
 		this.entries = entries;
 	}
 
@@ -44,7 +44,7 @@ final class IlScriptCache implements ScriptData {
 	 * Loads the cache for a script file, returning an empty cache if the file is missing or does not match the
 	 * current source/environment.
 	 */
-	static IlScriptCache load(Path sourcePath, String sourceHash, String environmentFingerprint) {
+	static IlScriptCache load(Path sourcePath, String sourceHash, IlSyntaxEnvironment environment) {
 		Path cacheDirectory = IlManager.cacheDirectory();
 		File cacheFile = null;
 		Map<String, IlManager.Entry> entries = new HashMap<>();
@@ -53,14 +53,18 @@ final class IlScriptCache implements ScriptData {
 				Files.createDirectories(cacheDirectory);
 				String pathHash = hash(sourcePath.toAbsolutePath().normalize().toString());
 				cacheFile = cacheDirectory.resolve(sourceHash + "-" + pathHash.substring(0, 16) + ".il").toFile();
-				Map<String, IlManager.Entry> loaded = IlFile.load(cacheFile, sourceHash, environmentFingerprint);
+				Map<String, IlManager.Entry> loaded = IlFile.load(cacheFile, sourceHash, environment);
 				if (loaded != null)
 					entries = loaded;
 			} catch (Exception e) {
 				IlManager.debug("Could not read IL cache for " + sourcePath + ": " + e);
 			}
 		}
-		return new IlScriptCache(cacheFile, sourceHash, environmentFingerprint, entries);
+		return new IlScriptCache(cacheFile, sourceHash, environment, entries);
+	}
+
+	IlSyntaxEnvironment environment() {
+		return environment;
 	}
 
 	/**
@@ -75,6 +79,16 @@ final class IlScriptCache implements ScriptData {
 
 	int entryCount() {
 		return entries.size();
+	}
+
+	void invalidate(String key) {
+		entries.remove(key);
+		dirty = true;
+	}
+
+	/** Keeps confirmed entries on the current ordering if a later write is needed. */
+	void refresh(String key, IlManager.Entry entry) {
+		entries.put(key, entry);
 	}
 
 	void markDirty() {
@@ -106,7 +120,7 @@ final class IlScriptCache implements ScriptData {
 	boolean saveIfDirty() throws IOException {
 		if (!dirty || file == null)
 			return false;
-		IlFile.save(file, sourceHash, environmentFingerprint, entries);
+		IlFile.save(file, sourceHash, environment.fingerprint(), entries);
 		dirty = false;
 		return true;
 	}

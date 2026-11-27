@@ -5,7 +5,9 @@ import ch.njol.skript.lang.Effect;
 import ch.njol.skript.lang.Expression;
 import ch.njol.skript.lang.Section;
 import ch.njol.skript.lang.Statement;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.skriptlang.skript.docs.Origin;
 import org.skriptlang.skript.lang.structure.Structure;
@@ -13,6 +15,8 @@ import org.skriptlang.skript.util.Registry;
 import org.skriptlang.skript.util.ViewProvider;
 
 import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 
 /**
  * A syntax registry is a central container for all {@link SyntaxInfo}s.
@@ -121,6 +125,25 @@ public interface SyntaxRegistry extends ViewProvider<SyntaxRegistry>, Registry<S
 	 */
 	@Override
 	@Unmodifiable Collection<SyntaxInfo<?>> elements();
+
+	/**
+	 * The syntax membership and matching order at one registry revision.
+	 */
+	@ApiStatus.Internal
+	record Snapshot(long revision, Map<Key<?>, List<SyntaxInfo<?>>> syntaxes) { }
+
+	/**
+	 * Returns a consistent ordered snapshot when the registry supports revision tracking.
+	 */
+	@ApiStatus.Internal
+	default @Nullable Snapshot syntaxSnapshot(Collection<? extends Key<?>> keys) {
+		return null;
+	}
+
+	@ApiStatus.Internal
+	default long syntaxRevision() {
+		return -1;
+	}
 
 	/**
 	 * Represents a syntax element type.

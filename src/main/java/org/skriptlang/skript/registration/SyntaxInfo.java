@@ -1,6 +1,7 @@
 package org.skriptlang.skript.registration;
 
 import ch.njol.skript.lang.SyntaxElement;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.Unmodifiable;
 import org.skriptlang.skript.docs.Origin;
@@ -83,6 +84,14 @@ public non-sealed interface SyntaxInfo<E extends SyntaxElement> extends DefaultS
 	 */
 	@Contract("-> new")
 	E instance();
+
+	/**
+	 * Whether instance creation uses the registered class's own constructor.
+	 */
+	@ApiStatus.Internal
+	default boolean usesDefaultFactory() {
+		return false;
+	}
 
 	/**
 	 * @return The patterns of this syntax.

@@ -104,6 +104,11 @@ class SyntaxInfoImpl<T extends SyntaxElement> implements SyntaxInfo<T> {
 	}
 
 	@Override
+	public boolean usesDefaultFactory() {
+		return supplier == null;
+	}
+
+	@Override
 	public @Unmodifiable SequencedCollection<String> patterns() {
 		return patterns;
 	}

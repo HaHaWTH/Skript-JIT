@@ -9,6 +9,7 @@ import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.skriptlang.skript.common.function.DefaultFunction;
 import org.skriptlang.skript.common.function.Parameter;
 import org.skriptlang.skript.common.function.Parameter.Modifier;
 import org.skriptlang.skript.lang.converter.Converters;
@@ -54,6 +55,7 @@ public final class FunctionRegistry implements Registry<Function<?>> {
 	 * All registered namespaces.
 	 */
 	private final Map<NamespaceIdentifier, Namespace> namespaces = new ConcurrentHashMap<>();
+	private final Object signatureLock = new Object();
 
 	@Override
 	public @Unmodifiable @NotNull Collection<Function<?>> elements() {
@@ -105,20 +107,17 @@ public final class FunctionRegistry implements Registry<Function<?>> {
 		Namespace ns = namespaces.computeIfAbsent(namespaceId, n -> new Namespace());
 		FunctionIdentifier identifier = FunctionIdentifier.of(signature);
 
-		// register
-		// since we are getting a set and then updating it,
-		// avoid race conditions by ensuring only one thread can access this namespace for this operation
-		synchronized (ns) {
+		synchronized (signatureLock) {
 			Set<FunctionIdentifier> identifiersWithName = ns.identifiers.computeIfAbsent(identifier.name, s -> new HashSet<>());
 			boolean exists = identifiersWithName.add(identifier);
 			if (!exists) {
 				alreadyRegisteredError(signature.getName(), identifier, namespaceId);
 			}
-		}
 
-		Signature<?> existing = ns.signatures.putIfAbsent(identifier, signature);
-		if (existing != null) {
-			alreadyRegisteredError(signature.getName(), identifier, namespaceId);
+			Signature<?> existing = ns.signatures.putIfAbsent(identifier, signature);
+			if (existing != null) {
+				alreadyRegisteredError(signature.getName(), identifier, namespaceId);
+			}
 		}
 	}
 
@@ -164,15 +163,17 @@ public final class FunctionRegistry implements Registry<Function<?>> {
 		}
 
 		FunctionIdentifier identifier = FunctionIdentifier.of(function.getSignature());
-		if (!signatureExists(namespaceId, identifier)) {
-			register(namespace, function.getSignature());
-		}
+		synchronized (signatureLock) {
+			if (!signatureExists(namespaceId, identifier)) {
+				register(namespace, function.getSignature());
+			}
 
-		Namespace ns = namespaces.computeIfAbsent(namespaceId, n -> new Namespace());
+			Namespace ns = namespaces.computeIfAbsent(namespaceId, n -> new Namespace());
 
-		Function<?> existing = ns.functions.putIfAbsent(identifier, function);
-		if (existing != null) {
-			alreadyRegisteredError(name, identifier, namespaceId);
+			Function<?> existing = ns.functions.putIfAbsent(identifier, function);
+			if (existing != null) {
+				alreadyRegisteredError(name, identifier, namespaceId);
+			}
 		}
 	}
 
@@ -410,24 +411,46 @@ public final class FunctionRegistry implements Registry<Function<?>> {
 	public @Unmodifiable @NotNull Set<Signature<?>> getSignatures(@Nullable String namespace, @NotNull String name) {
 		Preconditions.checkNotNull(name, "name cannot be null");
 
-		Map<FunctionIdentifier, Signature<?>> total = new HashMap<>();
-
-		// obtain all local functions of "name"
-		if (namespace != null) {
-			Namespace local = namespaces.getOrDefault(new NamespaceIdentifier(namespace), new Namespace());
-
-			for (FunctionIdentifier identifier : local.identifiers.getOrDefault(name, Collections.emptySet())) {
-				total.putIfAbsent(identifier, local.signatures.get(identifier));
+		synchronized (signatureLock) {
+			Map<FunctionIdentifier, Signature<?>> total = new HashMap<>();
+			if (namespace != null) {
+				collectSignatures(namespaces.get(new NamespaceIdentifier(namespace)), name, total);
 			}
+			collectSignatures(namespaces.get(GLOBAL_NAMESPACE), name, total);
+			return Set.copyOf(total.values());
 		}
+	}
 
-		// obtain all global functions of "name"
-		Namespace global = namespaces.getOrDefault(GLOBAL_NAMESPACE, new Namespace());
-		for (FunctionIdentifier identifier : global.identifiers.getOrDefault(name, Collections.emptySet())) {
-			total.putIfAbsent(identifier, global.signatures.get(identifier));
+	private static void collectSignatures(@Nullable Namespace namespace, String name, Map<FunctionIdentifier, Signature<?>> total) {
+		if (namespace == null) return;
+		for (FunctionIdentifier identifier : namespace.identifiers.getOrDefault(name, Set.of())) {
+			total.putIfAbsent(identifier, namespace.signatures.get(identifier));
 		}
+	}
 
-		return Set.copyOf(total.values());
+	/**
+	 * Identifies the registered native implementation for an exact signature from a parse lookup.
+	 */
+	public @Nullable NativeOrigin nativeOrigin(Signature<?> signature) {
+		FunctionIdentifier identifier = FunctionIdentifier.of(signature);
+		Function<?> function;
+		synchronized (signatureLock) {
+			Namespace global = namespaces.get(GLOBAL_NAMESPACE);
+			if (global == null || global.signatures.get(identifier) != signature) return null;
+			function = global.functions.get(identifier);
+		}
+		if (function == null || function.getSignature() != signature) return null;
+		if (function instanceof DefaultFunction<?> defaultFunction) {
+			return new NativeOrigin(defaultFunction.source().name(), function.getClass().getName(), true);
+		}
+		if (function instanceof JavaFunction<?> && !function.getClass().isHidden()
+			&& function.getClass().getClassLoader() == FunctionRegistry.class.getClassLoader()) {
+			return new NativeOrigin(null, function.getClass().getName(), false);
+		}
+		return null;
+	}
+
+	public record NativeOrigin(@Nullable String addonName, String implementation, boolean defaultFunction) {
 	}
 
 	/**
@@ -597,13 +620,14 @@ public final class FunctionRegistry implements Registry<Function<?>> {
 			return;
 		}
 
-		for (FunctionIdentifier other : namespace.identifiers.getOrDefault(name, Set.of())) {
-			if (!identifier.equals(other)) {
-				continue;
+		synchronized (signatureLock) {
+			for (FunctionIdentifier other : namespace.identifiers.getOrDefault(name, Set.of())) {
+				if (!identifier.equals(other)) {
+					continue;
+				}
+				removeUpdateMaps(namespace, other, name);
+				return;
 			}
-
-			removeUpdateMaps(namespace, other, name);
-			return;
 		}
 	}
 

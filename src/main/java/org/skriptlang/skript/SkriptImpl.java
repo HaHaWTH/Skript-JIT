@@ -1,6 +1,7 @@
 package org.skriptlang.skript;
 
 import ch.njol.skript.SkriptAPIException;
+import ch.njol.skript.lang.il.IlManager;
 import com.google.common.collect.ImmutableSet;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -38,12 +39,14 @@ final class SkriptImpl implements Skript {
 
 	@Override
 	public <R extends Registry<?>> void storeRegistry(Class<R> registryClass, R registry) {
-		registries.put(registryClass, registry);
+		Registry<?> previous = registries.put(registryClass, registry);
+		if (registryClass == SyntaxRegistry.class && previous != registry) IlManager.syntaxRegistryReplaced();
 	}
 
 	@Override
 	public void removeRegistry(Class<? extends Registry<?>> registryClass) {
-		registries.remove(registryClass);
+		Registry<?> removed = registries.remove(registryClass);
+		if (registryClass == SyntaxRegistry.class && removed != null) IlManager.syntaxRegistryReplaced();
 	}
 
 	@Override

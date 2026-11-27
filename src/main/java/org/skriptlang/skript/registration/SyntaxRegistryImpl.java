@@ -3,10 +3,12 @@ package org.skriptlang.skript.registration;
 import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableSet;
 import io.gunmu.skatalyst.addon.AddonRegistry;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.skriptlang.skript.docs.Origin;
 
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -15,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 final class SyntaxRegistryImpl implements SyntaxRegistry {
 
 	private final Map<Key<?>, SyntaxRegister<?>> registers = new ConcurrentHashMap<>();
+	private volatile long syntaxRevision;
 
 	@Override
 	@Unmodifiable
@@ -25,6 +28,7 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 	@Override
 	public synchronized <I extends SyntaxInfo<?>> void register(Key<I> key, I info) {
 		if (register(key).add(info)) {
+			syntaxRevision++;
 			AddonRegistry.syntaxRegistered(info);
 		}
 		if (key instanceof ChildKey) {
@@ -44,6 +48,7 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 	public synchronized <I extends SyntaxInfo<?>> void unregister(Key<I> key, I info) {
 		I registered = register(key).remove(info);
 		if (registered != null) {
+			syntaxRevision++;
 			AddonRegistry.syntaxUnregistered(registered);
 		}
 		if (key instanceof ChildKey) {
@@ -65,6 +70,20 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 			}
 		});
 		return builder.build();
+	}
+
+	@Override
+	public synchronized Snapshot syntaxSnapshot(Collection<? extends Key<?>> keys) {
+		Map<Key<?>, List<SyntaxInfo<?>>> entries = new LinkedHashMap<>();
+		for (Key<?> key : keys) {
+			entries.put(key, List.copyOf(syntaxes(key)));
+		}
+		return new Snapshot(syntaxRevision, Map.copyOf(entries));
+	}
+
+	@Override
+	public long syntaxRevision() {
+		return syntaxRevision;
 	}
 
 	static final class OriginApplyingRegistry implements SyntaxRegistry {
@@ -107,6 +126,16 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 			return syntaxRegistry.elements();
 		}
 
+		@Override
+		public @Nullable Snapshot syntaxSnapshot(Collection<? extends Key<?>> keys) {
+			return syntaxRegistry.syntaxSnapshot(keys);
+		}
+
+		@Override
+		public long syntaxRevision() {
+			return syntaxRegistry.syntaxRevision();
+		}
+
 	}
 
 	static final class UnmodifiableRegistry implements SyntaxRegistry {
@@ -120,6 +149,16 @@ final class SyntaxRegistryImpl implements SyntaxRegistry {
 		@Override
 		public @Unmodifiable Collection<SyntaxInfo<?>> elements() {
 			return registry.elements();
+		}
+
+		@Override
+		public @Nullable Snapshot syntaxSnapshot(Collection<? extends Key<?>> keys) {
+			return registry.syntaxSnapshot(keys);
+		}
+
+		@Override
+		public long syntaxRevision() {
+			return registry.syntaxRevision();
 		}
 
 		@Override

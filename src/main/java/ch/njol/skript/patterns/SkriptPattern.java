@@ -4,6 +4,7 @@ import ch.njol.skript.lang.Expression;
 import ch.njol.skript.lang.ParseContext;
 import ch.njol.skript.lang.SkriptParser;
 import com.google.common.collect.ImmutableList;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -29,14 +30,7 @@ public class SkriptPattern {
 
 	@Nullable
 	public MatchResult match(String expr, int flags, ParseContext parseContext) {
-		// Matching shortcut
-		String lowerExpr = expr.toLowerCase(Locale.ENGLISH);
-		if (lowerExpr.length() < minLength)
-			return null;
-		for (Keyword keyword : keywords) {
-			if (!keyword.isPresent(lowerExpr))
-				return null;
-		}
+		if (!matchesKeywords(expr.toLowerCase(Locale.ENGLISH))) return null;
 
 		expr = expr.trim();
 
@@ -47,6 +41,16 @@ public class SkriptPattern {
 		matchResult.parseContext = parseContext;
 		matchResult.flags = flags;
 		return first.match(expr, matchResult);
+	}
+
+	/** Matches the same necessary lexical conditions as {@link #match(String, int, ParseContext)}. */
+	@ApiStatus.Internal
+	public boolean matchesKeywords(String lowerExpr) {
+		if (lowerExpr.length() < minLength) return false;
+		for (Keyword keyword : keywords) {
+			if (!keyword.isPresent(lowerExpr)) return false;
+		}
+		return true;
 	}
 
 	@Nullable

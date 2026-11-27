@@ -5,20 +5,21 @@ import ch.njol.skript.SkriptConfig;
 import ch.njol.skript.classes.ClassInfo;
 import ch.njol.skript.registrations.Classes;
 import org.bukkit.Bukkit;
+import org.bukkit.event.EventPriority;
 import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.Nullable;
-import org.skriptlang.skript.registration.SyntaxInfo;
-import org.skriptlang.skript.registration.SyntaxRegistry;
 
 import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -34,21 +35,12 @@ public final class IlEnvironment {
 
 	private IlEnvironment() { }
 
-	private static final List<SyntaxRegistry.Key<?>> SYNTAX_KEYS = List.of(
-		SyntaxRegistry.STRUCTURE,
-		SyntaxRegistry.SECTION,
-		SyntaxRegistry.STATEMENT,
-		SyntaxRegistry.EFFECT,
-		SyntaxRegistry.CONDITION,
-		SyntaxRegistry.EXPRESSION
-	);
-
 	/**
 	 * @return the SHA-256 of the file's content, or {@code null} if it could not be read.
 	 */
 	public static @Nullable String hashFile(File file) {
 		try (InputStream in = Files.newInputStream(file.toPath())) {
-			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			MessageDigest digest = newDigest();
 			byte[] buffer = new byte[8192];
 			int read;
 			while ((read = in.read(buffer)) > 0)
@@ -60,45 +52,40 @@ public final class IlEnvironment {
 	}
 
 	public static String computeFingerprint() {
+		IlSyntaxEnvironment environment = IlSyntaxEnvironment.current();
+		return environment == null ? "unavailable" : environment.fingerprint();
+	}
+
+	static @Nullable String nonSyntaxFingerprint(ParseSettings settings) {
 		try {
-			MessageDigest digest = MessageDigest.getInstance("SHA-256");
+			MessageDigest digest = newDigest();
 			append(digest, "skript", Skript.getVersion().toString());
 			append(digest, "mc", Bukkit.getBukkitVersion());
 			append(digest, "api", Bukkit.getBukkitVersion());
-			append(digest, "language", String.valueOf(SkriptConfig.language.value()));
+			append(digest, "language", settings.language);
 
 			// the plugin jar identity: changes on every Skript build even if the version string does not
-			append(digest, "jar", pluginJarIdentity());
+			append(digest, "jar", pluginCodeIdentity(Skript.class));
 
 			// config options that can change parse results
-			append(digest, "simplify", String.valueOf(SkriptConfig.simplifySyntaxesOnParse.value()));
-			append(digest, "missing-and-or", String.valueOf(SkriptConfig.disableMissingAndOrWarnings.value()));
-			append(digest, "case-sensitive", String.valueOf(SkriptConfig.caseSensitive.value()));
-			append(digest, "case-insensitive-vars", String.valueOf(SkriptConfig.caseInsensitiveVariables.value()));
-			append(digest, "functions-before-defs", String.valueOf(SkriptConfig.allowFunctionsBeforeDefs.value()));
-			append(digest, "event-priority", String.valueOf(SkriptConfig.defaultEventPriority.value()));
-			append(digest, "number-accuracy", String.valueOf(SkriptConfig.numberAccuracy.value()));
+			append(digest, "simplify", Boolean.toString(settings.simplify));
+			append(digest, "missing-and-or", Boolean.toString(settings.disableMissingAndOrWarnings));
+			append(digest, "case-sensitive", Boolean.toString(settings.caseSensitive));
+			append(digest, "case-insensitive-vars", Boolean.toString(settings.caseInsensitiveVariables));
+			append(digest, "functions-before-defs", Boolean.toString(settings.allowFunctionsBeforeDefinitions));
+			append(digest, "event-priority", settings.eventPriority.name());
+			append(digest, "number-accuracy", Integer.toString(settings.numberAccuracy));
 
 			// plugins (addons register syntaxes, converters, class infos and event values)
 			Plugin[] plugins = Bukkit.getPluginManager().getPlugins();
 			List<String> pluginIdentities = new ArrayList<>(plugins.length);
-			for (Plugin plugin : plugins)
-				pluginIdentities.add(plugin.getName() + "@" + plugin.getPluginMeta().getVersion());
-			pluginIdentities.sort(String::compareTo);
-			append(digest, "plugins", String.join(",", pluginIdentities));
-
-			// registered syntaxes, in a JVM-independent (sorted) order
-			SyntaxRegistry registry = Skript.instance().syntaxRegistry();
-			List<String> syntaxIdentities = new ArrayList<>();
-			for (SyntaxRegistry.Key<?> key : SYNTAX_KEYS) {
-				for (SyntaxInfo<?> info : registry.syntaxes(key)) {
-					syntaxIdentities.add(info.type().getName()
-						+ '|' + info.priority()
-						+ '|' + String.join("\u0001", info.patterns()));
-				}
+			for (Plugin plugin : plugins) {
+				pluginIdentities.add(plugin.getName() + "@" + plugin.getPluginMeta().getVersion()
+					+ "@" + pluginCodeIdentity(plugin.getClass()));
 			}
-			syntaxIdentities.sort(String::compareTo);
-			append(digest, "syntax", String.join("\u0002", syntaxIdentities));
+			pluginIdentities.sort(String::compareTo);
+			append(digest, "plugins", Integer.toString(pluginIdentities.size()));
+			for (String plugin : pluginIdentities) append(digest, plugin);
 
 			// class infos (code names are stable and are what the IL stores)
 			Collection<ClassInfo<?>> classInfos = Classes.getClassInfos();
@@ -106,25 +93,26 @@ public final class IlEnvironment {
 				.map(ClassInfo::getCodeName)
 				.sorted()
 				.collect(Collectors.toList());
-			append(digest, "classinfos", String.join(",", classInfoNames));
+			append(digest, "classinfos", Integer.toString(classInfoNames.size()));
+			for (String classInfo : classInfoNames) append(digest, classInfo);
 
 			return IlScriptCache.hex(digest.digest());
 		} catch (Exception e) {
 			// if the fingerprint cannot be computed the cache is simply unusable
-			return "unavailable";
+			return null;
 		}
 	}
 
-	private static String pluginJarIdentity() {
+	private static String pluginCodeIdentity(Class<?> type) {
 		try {
-			var location = Skript.class.getProtectionDomain().getCodeSource().getLocation();
+			var location = type.getProtectionDomain().getCodeSource().getLocation();
 			if (location == null)
 				return "unknown";
 			File source = new File(location.toURI());
 			if (source.isFile())
 				return source.length() + "@" + source.lastModified();
-			// development environment (classes directory): use the Skript class file's identity
-			File classFile = new File(source, "ch/njol/skript/Skript.class");
+			// In a development classes directory, identify the plugin's class file.
+			File classFile = new File(source, type.getName().replace('.', '/') + ".class");
 			if (classFile.isFile())
 				return "classes@" + classFile.length() + "@" + classFile.lastModified();
 			return "unknown";
@@ -133,9 +121,50 @@ public final class IlEnvironment {
 		}
 	}
 
-	private static void append(MessageDigest digest, String name, String value) {
-		digest.update((name + '=' + value + '\n').getBytes(StandardCharsets.UTF_8));
+	static MessageDigest newDigest() {
+		try {
+			return MessageDigest.getInstance("SHA-256");
+		} catch (NoSuchAlgorithmException e) {
+			throw new AssertionError(e);
+		}
 	}
 
+	static void append(MessageDigest digest, String value) {
+		byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+		int length = bytes.length;
+		digest.update((byte) (length >>> 24));
+		digest.update((byte) (length >>> 16));
+		digest.update((byte) (length >>> 8));
+		digest.update((byte) length);
+		digest.update(bytes);
+	}
+
+	private static void append(MessageDigest digest, String name, String value) {
+		append(digest, name);
+		append(digest, value);
+	}
+
+	record ParseSettings(String language, boolean simplify, boolean disableMissingAndOrWarnings,
+						 boolean caseSensitive, boolean caseInsensitiveVariables, boolean allowFunctionsBeforeDefinitions,
+						 EventPriority eventPriority, int numberAccuracy) {
+
+		static ParseSettings capture() {
+			return new ParseSettings(SkriptConfig.language.value(), SkriptConfig.simplifySyntaxesOnParse.value(),
+				SkriptConfig.disableMissingAndOrWarnings.value(), SkriptConfig.caseSensitive.value(),
+				SkriptConfig.caseInsensitiveVariables.value(), SkriptConfig.allowFunctionsBeforeDefs.value(),
+				SkriptConfig.defaultEventPriority.value(), SkriptConfig.numberAccuracy.value());
+		}
+
+		boolean matchesCurrentValues() {
+			return Objects.equals(language, SkriptConfig.language.value())
+				&& simplify == SkriptConfig.simplifySyntaxesOnParse.value()
+				&& disableMissingAndOrWarnings == SkriptConfig.disableMissingAndOrWarnings.value()
+				&& caseSensitive == SkriptConfig.caseSensitive.value()
+				&& caseInsensitiveVariables == SkriptConfig.caseInsensitiveVariables.value()
+				&& allowFunctionsBeforeDefinitions == SkriptConfig.allowFunctionsBeforeDefs.value()
+				&& eventPriority == SkriptConfig.defaultEventPriority.value()
+				&& numberAccuracy == SkriptConfig.numberAccuracy.value();
+		}
+	}
 
 }

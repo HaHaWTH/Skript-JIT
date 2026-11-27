@@ -237,7 +237,7 @@ public final class SkriptParser {
 			return normalParse.get();
 
 		IlManager.Entry cached = frame.cached();
-		if (cached != null && cached.state() == IlManager.STATE_NODE) {
+		if (cached != null && cached.state() == IlManager.STATE_NODE && frame.canReplay()) {
 			T replayed = replay(frame, cached, expr, flags, parseContext);
 			if (replayed != null) return replayed;
 		}
@@ -263,7 +263,7 @@ public final class SkriptParser {
 		boolean success = false;
 		try (ParseLogHandler log = SkriptLogger.startParseLogHandler()) {
 			SkriptParser parser = new SkriptParser(expr, flags, parseContext);
-			T element = (T) IlManager.replay(entry.node(), frame.key(), parser);
+			T element = (T) IlManager.replay(frame, entry, parser);
 			if (element != null) {
 				log.printLog();
 				success = true;
@@ -616,7 +616,7 @@ public final class SkriptParser {
 					ExprFunctionCall<T> functionCall = new ExprFunctionCall<>(functionReference, types);
 					if (IlManager.isRecording()) {
 						IlManager.registerLeaf(functionCall,
-							new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+							new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal(), false));
 					}
 					return functionCall;
 				} else if (log.hasError()) {
@@ -777,7 +777,7 @@ public final class SkriptParser {
 				// If it wasn't variable, do same for function call
 				org.skriptlang.skript.common.function.FunctionReference<?> functionReference = parseFunctionReference();
 				if (functionReference != null) {
-					if (onlySingular && !functionReference.isSingle()) {
+					if (!acceptsFunctionCardinality(functionReference, onlySingular)) {
 						Skript.error("'" + expr + "' can only be a single "
 							+ Classes.toString(Stream.of(exprInfo.classes).map(classInfo -> classInfo.getName().toString()).toArray(), false)
 							+ ", not more.");
@@ -789,7 +789,7 @@ public final class SkriptParser {
 					ExprFunctionCall<Object> functionCall = new ExprFunctionCall<>(functionReference, types);
 					if (IlManager.isRecording()) {
 						IlManager.registerLeaf(functionCall,
-							new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+							new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal(), onlySingular));
 					}
 					return functionCall;
 				} else if (log.hasError()) {
@@ -1332,6 +1332,12 @@ public final class SkriptParser {
 			return new FunctionReferenceParser(context, flags).parseFunctionReference(expr);
 		}
 		return null;
+	}
+
+	@ApiStatus.Internal
+	public static boolean acceptsFunctionCardinality(org.skriptlang.skript.common.function.FunctionReference<?> reference,
+													boolean requiresSingle) {
+		return !requiresSingle || reference.isSingle();
 	}
 
 	/**
