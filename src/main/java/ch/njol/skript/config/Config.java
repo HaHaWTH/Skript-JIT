@@ -22,6 +22,10 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -43,6 +47,7 @@ public class Config implements Comparable<Config>, Validated, NodeNavigator, Any
 	private String indentationName = "tab";
 
 	private final SectionNode main;
+	private final @Nullable String sourceHash;
 
 	final String defaultSeparator;
 	String separator;
@@ -57,7 +62,14 @@ public class Config implements Comparable<Config>, Validated, NodeNavigator, Any
 
 	public Config(InputStream source, String fileName, @Nullable File file,
 				  boolean simple, boolean allowEmptySections, String defaultSeparator) throws IOException {
+		this(source, fileName, file, simple, allowEmptySections, defaultSeparator, false);
+	}
+
+	@ApiStatus.Internal
+	public Config(InputStream source, String fileName, @Nullable File file,
+				  boolean simple, boolean allowEmptySections, String defaultSeparator, boolean hashSource) throws IOException {
 		try (source) {
+			MessageDigest digest = hashSource ? newSourceDigest() : null;
 			this.fileName = fileName;
 			if (file != null) // Must check for null before converting to path
 				this.file = file.toPath();
@@ -69,16 +81,31 @@ public class Config implements Comparable<Config>, Validated, NodeNavigator, Any
 			if (source.available() == 0) {
 				main = new SectionNode(this);
 				Skript.warning("'" + getFileName() + "' is empty");
-				return;
-			}
+			} else {
+				if (Skript.logVeryHigh()) Skript.info("loading '" + fileName + "'");
 
-			if (Skript.logVeryHigh())
-				Skript.info("loading '" + fileName + "'");
-
-			try (ConfigReader reader = new ConfigReader(source)) {
-				main = SectionNode.load(this, reader);
+				try (ConfigReader reader = new ConfigReader(digest == null ? source : new DigestInputStream(source, digest))) {
+					main = SectionNode.load(this, reader);
+				}
 			}
+			sourceHash = digest == null ? null : HexFormat.of().formatHex(digest.digest());
 		}
+	}
+
+	private static MessageDigest newSourceDigest() {
+		try {
+			return MessageDigest.getInstance("SHA-256");
+		} catch (NoSuchAlgorithmException e) {
+			throw new AssertionError(e);
+		}
+	}
+
+	/**
+	 * Returns the SHA-256 of the input read by this Config when source hashing was requested.
+	 */
+	@ApiStatus.Internal
+	public @Nullable String getSourceHash() {
+		return sourceHash;
 	}
 
 	public Config(InputStream source, String fileName, boolean simple,
@@ -117,6 +144,7 @@ public class Config implements Comparable<Config>, Validated, NodeNavigator, Any
 		this.allowEmptySections = false;
 		this.separator = defaultSeparator = "";
 		this.main = new SectionNode(this);
+		this.sourceHash = null;
 		SkriptLogger.setNode(null); // clean-up after section node
 	}
 

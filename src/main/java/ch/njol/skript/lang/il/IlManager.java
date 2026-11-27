@@ -19,7 +19,6 @@ import java.util.Deque;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -134,41 +133,26 @@ public final class IlManager {
 		CONFLICTS.set(0);
 	}
 
-	/**
-	 * Drops all in-memory state.
-	 */
-	public static void clearInMemoryCaches() {
-		ACTIVE.clear();
-	}
-
 	/*
 	 * Script lifecycle
 	 */
-
-	/**
-	 * Active caches, keyed by the canonical path of the script file.
-	 */
-	private static final Map<Path, IlScriptCache> ACTIVE = new ConcurrentHashMap<>();
 
 	private static volatile String environmentFingerprint;
 
 	/**
 	 * Prepares the IL cache for a script that is about to be parsed.
 	 */
-	public static void beginScript(Config config) {
-		if (!enabled())
-			return;
+	public static void beginScript(Script script) {
+		if (!enabled()) return;
+		Config config = script.getConfig();
+		String sourceHash = config.getSourceHash();
+		if (sourceHash == null) return;
 		File file = config.getFile();
-		if (file == null)
-			return;
+		assert file != null;
 		try {
-			Path path = file.toPath().toAbsolutePath().normalize();
-			String sourceHash = IlEnvironment.hashFile(file);
-			if (sourceHash == null)
-				return;
 			String fingerprint = environmentFingerprint();
-			IlScriptCache cache = IlScriptCache.load(path, sourceHash, fingerprint);
-			ACTIVE.put(path, cache);
+			IlScriptCache cache = IlScriptCache.load(file.toPath(), sourceHash, fingerprint);
+			script.addData(cache);
 			CACHE_LOADS.incrementAndGet();
 			ENTRIES_LOADED.addAndGet(cache.entryCount());
 		} catch (Exception e) {
@@ -180,19 +164,16 @@ public final class IlManager {
 	 * Saves and releases the IL cache of a script that has finished loading.
 	 */
 	public static void finishScript(Script script) {
-		File file = script.getConfig().getFile();
-		if (file == null)
-			return;
-		Path path = file.toPath().toAbsolutePath().normalize();
-		IlScriptCache cache = ACTIVE.remove(path);
-		if (cache == null || !enabled())
-			return;
+		IlScriptCache cache = script.getData(IlScriptCache.class);
+		if (cache == null) return;
+		script.removeData(IlScriptCache.class);
+		if (!enabled()) return;
 		try {
 			if (cache.saveIfDirty()) {
 				CACHE_SAVES.incrementAndGet();
 			}
 		} catch (Exception e) {
-			debug("Could not save IL cache for " + file.getName() + ": " + e);
+			debug("Could not save IL cache for " + script.getConfig().getFileName() + ": " + e);
 		}
 	}
 
@@ -205,17 +186,6 @@ public final class IlManager {
 		} catch (Exception e) {
 			return null;
 		}
-	}
-
-	private static @Nullable IlScriptCache currentCache() {
-		ParserInstance parser = ParserInstance.get();
-		if (!parser.isActive())
-			return null;
-		Script script = parser.getCurrentScript();
-		File file = script.getConfig().getFile();
-		if (file == null)
-			return null;
-		return ACTIVE.get(file.toPath().toAbsolutePath().normalize());
 	}
 
 	/**
@@ -248,12 +218,16 @@ public final class IlManager {
 	private static final ThreadLocal<Set<String>> REPLAYING_KEYS = ThreadLocal.withInitial(HashSet::new);
 
 	static @Nullable Session currentSession() {
-		Deque<Session> sessions = SESSIONS.get();
-		return sessions.isEmpty() ? null : sessions.peek();
+		return SESSIONS.get().peek();
 	}
 
 	public static boolean isRecording() {
-		return !SESSIONS.get().isEmpty() && REPLAY_DEPTH.get()[0] == 0;
+		return recordingSession() != null;
+	}
+
+	private static @Nullable Session recordingSession() {
+		Session session = currentSession();
+		return session != null && !session.uncacheable && !isReplaying() ? session : null;
 	}
 
 	public static boolean isReplaying() {
@@ -304,17 +278,15 @@ public final class IlManager {
 	 */
 	public static @Nullable Frame beginSite(Site site, String expr, int flags, int parseContext) {
 		try {
-			if (!enabled())
-				return null;
-			IlScriptCache cache = currentCache();
-			if (cache == null)
-				return null;
-			Node node = ParserInstance.get().getNode();
-			if (node == null)
-				return null;
+			if (!enabled()) return null;
+			ParserInstance parser = ParserInstance.get();
+			if (!parser.isActive()) return null;
+			IlScriptCache cache = parser.getCurrentScript().getData(IlScriptCache.class);
+			if (cache == null) return null;
+			Node node = parser.getNode();
+			if (node == null) return null;
 			int line = node.getLine();
-			if (line < 0)
-				return null;
+			if (line < 0) return null;
 			String key = site.ordinal() + ":" + line + ":" + expr;
 			return new Frame(site, expr, flags, parseContext, key, cache, cache.get(key));
 		} catch (Exception e) {
@@ -385,12 +357,9 @@ public final class IlManager {
 	 */
 	public static void recordElement(Object result, SyntaxInfo<?> info, int patternIndex,
 	                                 ParseResult parseResult) {
+		Session session = recordingSession();
+		if (session == null) return;
 		try {
-			if (!isRecording())
-				return;
-			Session session = currentSession();
-			if (session == null || session.uncacheable)
-				return;
 			// A class-only IL element can identify only one exact registration.
 			if (infoFor(info.type()) != info) {
 				session.uncacheable = true;
@@ -404,9 +373,7 @@ public final class IlManager {
 			session.nodes.put(result, node);
 		} catch (Exception e) {
 			// the IL must never break script loading
-			Session session = currentSession();
-			if (session != null)
-				session.uncacheable = true;
+			session.uncacheable = true;
 			debug("could not record element: " + e);
 		}
 	}
@@ -415,9 +382,8 @@ public final class IlManager {
 	 * Registers a leaf expression created by the parser.
 	 */
 	public static void registerLeaf(Object object, IlNode node) {
-		Session session = currentSession();
-		if (session != null && !session.uncacheable && !isReplaying())
-			session.nodes.put(object, node);
+		Session session = recordingSession();
+		if (session != null) session.nodes.put(object, node);
 	}
 
 	/**

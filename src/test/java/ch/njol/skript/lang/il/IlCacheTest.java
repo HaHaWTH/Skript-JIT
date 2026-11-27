@@ -3,6 +3,7 @@ package ch.njol.skript.lang.il;
 import ch.njol.skript.ScriptLoader;
 import ch.njol.skript.Skript;
 import ch.njol.skript.SkriptConfig;
+import ch.njol.skript.config.Config;
 import ch.njol.skript.lang.ParseContext;
 import ch.njol.skript.lang.SkriptParser;
 import ch.njol.skript.log.SkriptLogger;
@@ -19,9 +20,11 @@ import org.skriptlang.skript.lang.structure.Structure;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -30,19 +33,26 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Stream;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeFalse;
 
 /**
  * End-to-end tests for the persistent intermediate-language (IL) script parse cache: cold load + persist,
- * simulated restart + replay, replayed code execution, invalidation when a fixture file changes, and replay speed.
+ * disk replay, replayed code execution, invalidation when a fixture file changes, and replay speed.
  * <p>
  * The IL cache directory ({@code <data>/il-cache}) is intentionally <b>not</b> deleted by this class: it also caches
  * the startup JUnit and example scripts, and keeping it lets a later test-server run with the same built jar (and
@@ -60,6 +70,7 @@ public class IlCacheTest extends SkriptJUnitTest {
 	private static final String SUBTRACTION_RESULT = "il_cache_subtraction_result";
 	private static final String CONSUMER_VALUE = "il_cache_consumer_value";
 	private static final String CONSUMER_MARKER = "il_cache_consumer_marker";
+	private static final String INPUT_DIGEST_VALUE = "il_cache_input_digest_value";
 
 	/** Number of generated statement groups per trigger body in {@link #replayIsFasterThanColdParse()}. */
 	private static final int BIG_FIXTURE_ITERATIONS = 60;
@@ -82,7 +93,6 @@ public class IlCacheTest extends SkriptJUnitTest {
 
 		// The shared IL cache directory is deliberately left alone (see the class javadoc). The fixtures contain a
 		// fresh UUID, so their content hash is new and their cold load cannot hit a stale cache file.
-		IlManager.clearInMemoryCaches();
 		deleteRecursively(fixtureDirectory);
 		IlManager.resetStats();
 
@@ -111,8 +121,7 @@ public class IlCacheTest extends SkriptJUnitTest {
 		assertEquals("the loop must have run on the cold load", 3, globalNumber(LOOP_VALUE).intValue());
 		assertNoScriptFailures("the cold load");
 
-		// --- 2) simulate a restart, then reload: the IL must be replayed from disk only ---
-		IlManager.clearInMemoryCaches();
+		// --- 2) reload the script using the persisted IL ---
 		var beforeReplayedLoad = IlManager.stats();
 		Script replayed = reloadFile(script);
 		var afterReplayedLoad = IlManager.stats();
@@ -142,7 +151,6 @@ public class IlCacheTest extends SkriptJUnitTest {
 		String changedFixture = Files.readString(fixtureFile, StandardCharsets.UTF_8)
 			+ "\non load:\n\tset {" + EXTRA_MARKER + "} to true\n";
 		Files.writeString(fixtureFile, changedFixture, StandardCharsets.UTF_8);
-		IlManager.clearInMemoryCaches();
 		var beforeChangedLoad = IlManager.stats();
 		script = reloadFile(replayed);
 		var afterChangedLoad = IlManager.stats();
@@ -166,7 +174,6 @@ public class IlCacheTest extends SkriptJUnitTest {
 		assertNoScriptFailures("the changed load");
 
 		// --- 5) the freshly written IL must be replayed again ---
-		IlManager.clearInMemoryCaches();
 		var beforeSecondReplay = IlManager.stats();
 		script = reloadFile(script);
 		var afterSecondReplay = IlManager.stats();
@@ -178,6 +185,128 @@ public class IlCacheTest extends SkriptJUnitTest {
 		assertEquals("replaying must not fail", 0, afterSecondReplay.replayFailures());
 		assertEquals("the replayed appended trigger must run", 4, globalNumber(LOAD_COUNT).intValue());
 		assertNoScriptFailures("the re-cached replay");
+	}
+
+	@Test
+	public void hashesTheInputSnapshotEvenWhenTheFileChangesBeforeParsing() throws Exception {
+		Path source = fixtureDirectory.resolve("input-snapshot.sk");
+		String fixture = "\uFEFF# " + UUID.randomUUID() + "\r\non load:\r\n\tset {" + INPUT_DIGEST_VALUE + "} to ";
+		Files.writeString(source, fixture + "11", StandardCharsets.UTF_8);
+		String originalHash = IlEnvironment.hashFile(source.toFile());
+		assertNotNull(originalHash);
+		File canonicalFile = source.toFile().getCanonicalFile();
+		// This event runs after Config has read the file and before Skript starts loading its structures.
+		ScriptLoader.ScriptPreInitEvent replaceSource = configs -> {
+			if (configs.stream().noneMatch(config -> canonicalFile.equals(config.getFile()))) return;
+			try {
+				Files.writeString(source, fixture + "29", StandardCharsets.UTF_8);
+			} catch (IOException exception) {
+				throw new UncheckedIOException(exception);
+			}
+		};
+		Script original;
+		ScriptLoader.eventRegistry().register(replaceSource);
+		try {
+			original = loadFile(source.toFile());
+		} finally {
+			ScriptLoader.eventRegistry().unregister(replaceSource);
+		}
+		assertEquals(11, globalNumber(INPUT_DIGEST_VALUE).longValue());
+		assertEquals(originalHash, original.getConfig().getSourceHash());
+		Path originalIl = trackFixtureCache(originalHash);
+		assertNotNull(IlFile.load(originalIl.toFile(), originalHash, IlManager.environmentFingerprint()));
+
+		String replacementHash = IlEnvironment.hashFile(source.toFile());
+		assertNotNull(replacementHash);
+		assertNotEquals(originalHash, replacementHash);
+		long entriesLoaded = IlManager.stats().entriesLoaded();
+		Script replacement = reloadFile(original);
+		assertEquals(29, globalNumber(INPUT_DIGEST_VALUE).longValue());
+		assertEquals(replacementHash, replacement.getConfig().getSourceHash());
+		assertEquals("There is no IL for the replacement until it is parsed", entriesLoaded, IlManager.stats().entriesLoaded());
+		trackFixtureCache(replacementHash);
+
+		IlManager.setEnabledOverride(false);
+		assertNull("Disabled caching must skip hashing the script", reloadFile(replacement).getConfig().getSourceHash());
+	}
+
+	@Test
+	public void keepsSeparateCacheStateForTwoLoadsOfTheSameConfig() throws IOException {
+		Config config = new Config(Files.newInputStream(fixtureFile), fixtureFile.getFileName().toString(),
+			fixtureFile.toFile().getCanonicalFile(), true, false, ":", true);
+		assertNotNull(config.getSourceHash());
+		Script first = new Script(config, List.of());
+		Script second = new Script(config, List.of());
+
+		IlManager.beginScript(first);
+		IlManager.beginScript(second);
+		IlScriptCache firstCache = first.getData(IlScriptCache.class);
+		IlScriptCache secondCache = second.getData(IlScriptCache.class);
+		assertNotNull(firstCache);
+		assertNotNull(secondCache);
+		assertNotSame(firstCache, secondCache);
+
+		IlManager.finishScript(first);
+		assertNull(first.getData(IlScriptCache.class));
+		assertSame(secondCache, second.getData(IlScriptCache.class));
+		IlManager.finishScript(second);
+		assertNull(second.getData(IlScriptCache.class));
+	}
+
+	@Test
+	public void concurrentSavesUseIndependentTemporaryFiles() throws Exception {
+		Path directory = Files.createDirectory(fixtureDirectory.resolve("concurrent-save"));
+		File file = directory.resolve("script.il").toFile();
+		String sourceHash = "test-source";
+		String fingerprint = IlManager.environmentFingerprint();
+		Map<String, IlManager.Entry> firstEntries = Map.of(
+			"first", new IlManager.Entry(IlManager.STATE_NODE, new IlNode.Unparsed("first"), 0, 0, "first"),
+			"first-extra", new IlManager.Entry(IlManager.STATE_UNSAFE, null, 0, 0, "first-extra"));
+		Map<String, IlManager.Entry> secondEntries = Map.of(
+			"second", new IlManager.Entry(IlManager.STATE_NODE, new IlNode.Unparsed("second"), 0, 0, "second"),
+			"second-extra", new IlManager.Entry(IlManager.STATE_UNSAFE, null, 0, 0, "second-extra"));
+		CyclicBarrier openedWriters = new CyclicBarrier(2);
+
+		try (var workers = Executors.newFixedThreadPool(2)) {
+			var first = workers.submit(() -> {
+				IlFile.save(file, sourceHash, fingerprint, awaitBothWriters(firstEntries, openedWriters));
+				return null;
+			});
+			var second = workers.submit(() -> {
+				IlFile.save(file, sourceHash, fingerprint, awaitBothWriters(secondEntries, openedWriters));
+				return null;
+			});
+			first.get(15, TimeUnit.SECONDS);
+			second.get(15, TimeUnit.SECONDS);
+		}
+
+		var loaded = IlFile.load(file, sourceHash, fingerprint);
+		assertTrue("The published file must contain one complete save", firstEntries.equals(loaded) || secondEntries.equals(loaded));
+		try (var files = Files.list(directory)) {
+			assertEquals("No temporary files may remain", List.of(file.toPath()), files.toList());
+		}
+	}
+
+	private static Map<String, IlManager.Entry> awaitBothWriters(Map<String, IlManager.Entry> entries, CyclicBarrier barrier) {
+		return new AbstractMap<>() {
+			@Override
+			public int size() {
+				return entries.size();
+			}
+
+			@Override
+			public Set<Map.Entry<String, IlManager.Entry>> entrySet() {
+				try {
+					barrier.await(10, TimeUnit.SECONDS);
+				} catch (InterruptedException exception) {
+					Thread.currentThread().interrupt();
+					throw new AssertionError("Interrupted waiting for both cache writers", exception);
+				} catch (BrokenBarrierException | TimeoutException exception) {
+					throw new AssertionError("Expected both cache writers to open their output first", exception);
+				}
+				return entries.entrySet();
+			}
+		};
 	}
 
 	@Test
@@ -199,7 +328,6 @@ public class IlCacheTest extends SkriptJUnitTest {
 
 		Variables.deleteVariable(MULTIPLICATION_RESULT, null, false);
 		Variables.deleteVariable(SUBTRACTION_RESULT, null, false);
-		IlManager.clearInMemoryCaches();
 		var beforeReplay = IlManager.stats();
 		reloadFile(cold);
 		var afterReplay = IlManager.stats();
@@ -240,7 +368,6 @@ public class IlCacheTest extends SkriptJUnitTest {
 		Files.writeString(provider, "function " + functionName + "() :: number:\n\treturn 41\n", StandardCharsets.UTF_8);
 		loadFile(provider.toFile());
 		trackFixtureCache(provider);
-		IlManager.clearInMemoryCaches();
 		var beforeMissingRetry = IlManager.stats();
 		Script resolved = reloadFile(cold);
 		var afterMissingRetry = IlManager.stats();
@@ -250,7 +377,6 @@ public class IlCacheTest extends SkriptJUnitTest {
 		assertEquals("The consumer file must be unchanged", consumerSource, Files.readString(consumer));
 
 		Variables.deleteVariable(CONSUMER_VALUE, null, false);
-		IlManager.clearInMemoryCaches();
 		var beforeReplay = IlManager.stats();
 		reloadFile(resolved);
 		var afterReplay = IlManager.stats();
@@ -267,15 +393,13 @@ public class IlCacheTest extends SkriptJUnitTest {
 
 		try {
 			// Cold parse: the fresh run id gives the file a new content hash, so this is guaranteed to be a miss.
-			IlManager.clearInMemoryCaches();
 			var beforeCold = IlManager.stats();
 			long coldStart = System.nanoTime();
 			Script coldScript = loadFile(bigFixtureFile.toFile());
 			long coldNanos = System.nanoTime() - coldStart;
 			var afterCold = IlManager.stats();
 
-			// Simulated restart: drop the in-memory state and reload from the freshly written IL files.
-			IlManager.clearInMemoryCaches();
+			// Reload from the freshly written IL files.
 			var beforeReplay = IlManager.stats();
 			long replayStart = System.nanoTime();
 			reloadFile(coldScript);
@@ -388,6 +512,10 @@ public class IlCacheTest extends SkriptJUnitTest {
 	private Path trackFixtureCache(Path scriptFile) throws IOException {
 		String sourceHash = IlEnvironment.hashFile(scriptFile.toFile());
 		assertNotNull(sourceHash);
+		return trackFixtureCache(sourceHash);
+	}
+
+	private Path trackFixtureCache(String sourceHash) throws IOException {
 		Path directory = IlManager.cacheDirectory();
 		assertNotNull(directory);
 		try (var files = Files.list(directory)) {
@@ -482,10 +610,9 @@ public class IlCacheTest extends SkriptJUnitTest {
 				Files.deleteIfExists(cacheFile);
 			}
 			for (String variable : new String[] {LOAD_COUNT, LOOP_VALUE, TRIGGER_FIRED, TRIGGER_DAMAGE, EXTRA_MARKER,
-				MULTIPLICATION_RESULT, SUBTRACTION_RESULT, CONSUMER_VALUE, CONSUMER_MARKER}) {
+				MULTIPLICATION_RESULT, SUBTRACTION_RESULT, CONSUMER_VALUE, CONSUMER_MARKER, INPUT_DIGEST_VALUE}) {
 				Variables.deleteVariable(variable, null, false);
 			}
-			IlManager.clearInMemoryCaches();
 			IlManager.setEnabledOverride((Boolean) null);
 			IlManager.resetStats();
 		}

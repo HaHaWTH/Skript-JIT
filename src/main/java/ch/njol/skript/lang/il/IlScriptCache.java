@@ -1,6 +1,7 @@
 package ch.njol.skript.lang.il;
 
 import org.jetbrains.annotations.Nullable;
+import org.skriptlang.skript.lang.script.ScriptData;
 
 import java.io.File;
 import java.io.IOException;
@@ -14,7 +15,7 @@ import java.util.Map;
 /**
  * The in-memory cache of a single script file.
  */
-final class IlScriptCache {
+final class IlScriptCache implements ScriptData {
 
 	static final int NO_CHANGE = 0;
 	static final int ADDED = 1;

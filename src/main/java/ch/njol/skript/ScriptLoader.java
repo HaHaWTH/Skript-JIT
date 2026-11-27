@@ -36,7 +36,6 @@ import org.skriptlang.skript.util.event.EventRegistry;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
@@ -697,7 +696,7 @@ public class ScriptLoader {
 		List<Structure> structures = new ArrayList<>();
 		Script script = new Script(config, structures);
 		parser.setActive(script);
-		IlManager.beginScript(config);
+		IlManager.beginScript(script);
 
 		try {
 			if (SkriptConfig.keepConfigsLoaded.value())
@@ -846,35 +845,11 @@ public class ScriptLoader {
 
 		track(file);
 
+		String name = Skript.getInstance().getDataFolder().toPath().toAbsolutePath()
+			.resolve(Skript.SCRIPTSFOLDER).relativize(file.toPath().toAbsolutePath()).toString();
 		try {
-			String name = Skript.getInstance().getDataFolder().toPath().toAbsolutePath()
-					.resolve(Skript.SCRIPTSFOLDER).relativize(file.toPath().toAbsolutePath()).toString();
-			return loadStructure(Files.newInputStream(file.toPath()), name);
-		} catch (IOException e) {
-			Skript.error("Could not load " + file.getName() + ": " + ExceptionUtils.toString(e));
-		}
-
-		return null;
-	}
-
-	/**
-	 * Creates a script structure from the provided source.
-	 * This must be done before actually loading a script.
-	 * @param source Source input stream.
-	 * @param name Name of source "file".
-	 * @return The loaded structure or null if an error occurred.
-	 */
-	@Nullable
-	private static Config loadStructure(InputStream source, String name) {
-		try {
-			return new Config(
-				source,
-				name,
-				Skript.getInstance().getDataFolder().toPath().resolve(Skript.SCRIPTSFOLDER).resolve(name).toFile().getCanonicalFile(),
-				true,
-				false,
-				":"
-			);
+			boolean hashSource = IlManager.enabled();
+			return new Config(Files.newInputStream(file.toPath()), name, file, true, false, ":", hashSource);
 		} catch (IOException e) {
 			Skript.error("Could not load " + name + ": " + ExceptionUtils.toString(e));
 		}

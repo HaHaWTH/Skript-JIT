@@ -547,8 +547,9 @@ public final class SkriptParser {
 					return null;
 			}
 			Variable<T> variable = Variable.newInstance(variableName, returnTypes);
-			if (variable != null)
+			if (variable != null && IlManager.isRecording()) {
 				IlManager.registerLeaf(variable, new IlNode.Variable(variableName, classNames(returnTypes)));
+			}
 			return variable;
 		}
 		return null;
@@ -562,8 +563,9 @@ public final class SkriptParser {
 		if (expr.startsWith("\"") && expr.length() != 1 && nextQuote(expr, 1) == expr.length() - 1) {
 			String raw = "" + expr.substring(1, expr.length() - 1);
 			VariableString string = VariableString.newInstance(raw);
-			if (string != null)
+			if (string != null && IlManager.isRecording()) {
 				IlManager.registerLeaf(string, new IlNode.VarString(raw, StringMode.MESSAGE.name()));
+			}
 			return string;
 		} else {
 			var iterator = new CheckedIterator<>(Skript.instance().syntaxRegistry().syntaxes(SyntaxRegistry.EXPRESSION).iterator(), info -> {
@@ -612,8 +614,10 @@ public final class SkriptParser {
 				if (functionReference != null) {
 					log.printLog();
 					ExprFunctionCall<T> functionCall = new ExprFunctionCall<>(functionReference, types);
-					IlManager.registerLeaf(functionCall,
-						new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+					if (IlManager.isRecording()) {
+						IlManager.registerLeaf(functionCall,
+							new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+					}
 					return functionCall;
 				} else if (log.hasError()) {
 					log.printError();
@@ -637,10 +641,11 @@ public final class SkriptParser {
 					Expression<? extends T> convertedExpression = parsedExpression.getConvertedExpression(objTypes);
 					if (convertedExpression != null) {
 						log.printLog();
-						IlNode child = IlManager.nodeFor(parsedExpression);
-						if (child != null)
+						IlNode child = IlManager.isRecording() ? IlManager.nodeFor(parsedExpression) : null;
+						if (child != null) {
 							IlManager.registerLeaf(convertedExpression,
 								new IlNode.Converted(child, classNames(objTypes)));
+						}
 						return convertedExpression;
 					}
 					// Print errors, if we couldn't get the correct type
@@ -782,8 +787,10 @@ public final class SkriptParser {
 
 					log.printLog();
 					ExprFunctionCall<Object> functionCall = new ExprFunctionCall<>(functionReference, types);
-					IlManager.registerLeaf(functionCall,
-						new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+					if (IlManager.isRecording()) {
+						IlManager.registerLeaf(functionCall,
+							new IlNode.FunctionCall(expr, classNames(types), flags, context.ordinal()));
+					}
 					return functionCall;
 				} else if (log.hasError()) {
 					log.printError();
@@ -827,10 +834,11 @@ public final class SkriptParser {
 					Expression<?> convertedExpression = parsedExpression.getConvertedExpression((Class<Object>[]) types);
 					if (convertedExpression != null) {
 						log.printLog();
-						IlNode child = IlManager.nodeFor(parsedExpression);
-						if (child != null)
+						IlNode child = IlManager.isRecording() ? IlManager.nodeFor(parsedExpression) : null;
+						if (child != null) {
 							IlManager.registerLeaf(convertedExpression,
 								new IlNode.Converted(child, classNames(types)));
+						}
 						return convertedExpression;
 					}
 
@@ -900,7 +908,9 @@ public final class SkriptParser {
 			if (parsedObject != null) {
 				log.printLog();
 				SimpleLiteral<T> literal = new SimpleLiteral<>(parsedObject, false, new UnparsedLiteral(expr));
-				IlManager.registerLeaf(literal, new IlNode.Literal(expr, type.getName(), context.ordinal()));
+				if (IlManager.isRecording()) {
+					IlManager.registerLeaf(literal, new IlNode.Literal(expr, type.getName(), context.ordinal()));
+				}
 				return literal;
 			}
 		}
@@ -913,8 +923,9 @@ public final class SkriptParser {
 					continue;
 				String raw = expr.substring(1, expr.length() - 1);
 				VariableString string = VariableString.newInstance(raw);
-				if (string != null)
+				if (string != null && IlManager.isRecording()) {
 					IlManager.registerLeaf(string, new IlNode.VarString(raw, StringMode.MESSAGE.name()));
+				}
 				if (string instanceof LiteralString)
 					//noinspection unchecked
 					return (Expression<? extends T>) string;
@@ -944,7 +955,7 @@ public final class SkriptParser {
 		LogEntry logError = log.getError();
 		UnparsedLiteral literal = new UnparsedLiteral(expr,
 			logError != null && (error == null || logError.quality > error.quality) ? logError : error);
-		IlManager.registerLeaf(literal, new IlNode.Unparsed(expr));
+		if (IlManager.isRecording()) IlManager.registerLeaf(literal, new IlNode.Unparsed(expr));
 		return literal;
 	}
 
@@ -984,8 +995,10 @@ public final class SkriptParser {
 		T parsedObject = (T) classInfoParser.parse(literalString, context);
 		if (parsedObject != null) {
 			SimpleLiteral<T> literal = new SimpleLiteral<>(parsedObject, false, new UnparsedLiteral(literalString));
-			IlManager.registerLeaf(literal,
-				new IlNode.SpecifiedLiteral(literalString, unparsedClassInfo, context.ordinal()));
+			if (IlManager.isRecording()) {
+				IlManager.registerLeaf(literal,
+					new IlNode.SpecifiedLiteral(literalString, unparsedClassInfo, context.ordinal()));
+			}
 			return literal;
 		}
 		return null;
@@ -1132,7 +1145,7 @@ public final class SkriptParser {
 			if (isObject && (flags & PARSE_LITERALS) != 0) { // single expression, can return an UnparsedLiteral now
 				log.clear();
 				UnparsedLiteral literal = new UnparsedLiteral(expr, log.getError());
-				IlManager.registerLeaf(literal, new IlNode.Unparsed(expr));
+				if (IlManager.isRecording()) IlManager.registerLeaf(literal, new IlNode.Unparsed(expr));
 				return literal;
 			}
 			log.printError();
@@ -1294,9 +1307,12 @@ public final class SkriptParser {
 			//noinspection unchecked, rawtypes
 			list = new ExpressionList(expressions, superReturnType, returnTypes, !and.isFalse());
 		}
-		List<IlNode> childNodes = childNodes(parsedExpressions);
-		if (childNodes != null)
-			IlManager.registerLeaf(list, new IlNode.ListExpr(childNodes, isLiteralList, !and.isFalse()));
+		if (IlManager.isRecording()) {
+			List<IlNode> childNodes = childNodes(parsedExpressions);
+			if (childNodes != null) {
+				IlManager.registerLeaf(list, new IlNode.ListExpr(childNodes, isLiteralList, !and.isFalse()));
+			}
+		}
 		return list;
 	}
 

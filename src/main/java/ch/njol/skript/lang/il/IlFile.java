@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,17 +30,33 @@ final class IlFile {
 
 	private static final int MAGIC = 0x534B494C; // "SKIL"
 	static final int FORMAT_VERSION = 1;
+	private static final Object PUBLISH_LOCK = new Object();
 
 	private IlFile() { }
 
 	static void save(File file, String sourceHash, String environmentFingerprint,
 					 Map<String, IlManager.Entry> entries) throws IOException {
-		File parent = file.getParentFile();
-		if (parent != null && !parent.isDirectory() && !parent.mkdirs())
-			throw new IOException("Could not create cache directory " + parent);
-		File temp = new File(file.getPath() + ".tmp");
+		Path target = file.toPath().toAbsolutePath();
+		Path directory = Files.createDirectories(target.getParent());
+		Path temp = Files.createTempFile(directory, "skil-", ".tmp");
+		try {
+			write(temp, sourceHash, environmentFingerprint, entries);
+			synchronized (PUBLISH_LOCK) {
+				try {
+					Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+				} catch (AtomicMoveNotSupportedException e) {
+					Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+				}
+			}
+		} finally {
+			Files.deleteIfExists(temp);
+		}
+	}
+
+	private static void write(Path temp, String sourceHash, String environmentFingerprint,
+							  Map<String, IlManager.Entry> entries) throws IOException {
 		try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(
-				new GZIPOutputStream(Files.newOutputStream(temp.toPath()))))) {
+				new GZIPOutputStream(Files.newOutputStream(temp))))) {
 			out.writeInt(MAGIC);
 			out.writeInt(FORMAT_VERSION);
 			writeString(out, VERSION);
@@ -59,12 +76,6 @@ final class IlFile {
 					writeNode(out, entry.node());
 				}
 			}
-		}
-		try {
-			Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING,
-				StandardCopyOption.ATOMIC_MOVE);
-		} catch (AtomicMoveNotSupportedException e) {
-			Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
 		}
 	}
 
