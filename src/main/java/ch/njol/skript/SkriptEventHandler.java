@@ -18,7 +18,7 @@ import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.util.*;
 import java.util.Map.Entry;
-import java.util.stream.Collectors;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class SkriptEventHandler {
 
@@ -59,20 +59,34 @@ public final class SkriptEventHandler {
 	 * Each Event effectively maps to an ArrayList of Triggers.
 	 */
 	private static final Multimap<Class<? extends Event>, Trigger> triggers = ArrayListMultimap.create();
+	private static final Object registrationLock = new Object();
+	private static volatile Map<Class<? extends Event>, Trigger[]> dispatchCache = new ConcurrentHashMap<>();
+
+	private static Trigger[] getTriggers(Class<? extends Event> event) {
+		Trigger[] cached = dispatchCache.get(event);
+		if (cached != null) return cached;
+
+		synchronized (registrationLock) {
+			return dispatchCache.computeIfAbsent(event, SkriptEventHandler::resolveTriggers);
+		}
+	}
 
 	/**
-	 * A utility method to get all Triggers registered under the provided Event class.
-	 * @param event The event to find pairs from.
-	 * @return A List containing all Triggers registered under the provided Event class.
+	 * Called under the registration lock so the scan sees one set of registrations.
 	 */
-	private static List<Trigger> getTriggers(Class<? extends Event> event) {
+	private static Trigger[] resolveTriggers(Class<? extends Event> event) {
 		HandlerList eventHandlerList = getHandlerList(event);
 		assert eventHandlerList != null; // It had one at some point so this should remain true
 		return triggers.asMap().entrySet().stream()
 				.filter(entry -> entry.getKey().isAssignableFrom(event) && getHandlerList(entry.getKey()) == eventHandlerList)
 				.flatMap(entry -> entry.getValue().stream())
 				.distinct()
-				.collect(Collectors.toList()); // forces evaluation now and prevents us from having to call getTriggers again if very high logging is enabled
+				.toArray(Trigger[]::new);
+	}
+
+	private static void invalidateDispatchCache() {
+		// Readers that already obtained a result may finish. New readers use a fresh generation
+		if (!dispatchCache.isEmpty()) dispatchCache = new ConcurrentHashMap<>();
 	}
 
 	/**
@@ -84,9 +98,8 @@ public final class SkriptEventHandler {
 	 */
 	private static void check(Event event, EventPriority priority) {
 		// get all triggers for this event, return if none
-		List<Trigger> triggers = getTriggers(event.getClass());
-		if (triggers.isEmpty())
-			return;
+		Trigger[] triggers = getTriggers(event.getClass());
+		if (triggers.length == 0) return;
 
 		// Check if this event should be treated as cancelled
 		boolean isCancelled = isCancelled(event);
@@ -283,17 +296,19 @@ public final class SkriptEventHandler {
 	 * @see #unregisterBukkitEvents(Trigger)
 	 */
 	public static void registerBukkitEvent(Trigger trigger, Class<? extends Event> event) {
-		HandlerList handlerList = getHandlerList(event);
-		if (handlerList == null)
-			return;
+		synchronized (registrationLock) {
+			HandlerList handlerList = getHandlerList(event);
+			if (handlerList == null) return;
 
-		triggers.put(event, trigger);
+			triggers.put(event, trigger);
+			invalidateDispatchCache();
 
-		EventPriority priority = trigger.getEvent().getEventPriority();
+			EventPriority priority = trigger.getEvent().getEventPriority();
 
-		if (!isEventRegistered(handlerList, priority)) { // Check if event is registered
-			PriorityListener listener = listeners[priority.ordinal()];
-			Bukkit.getPluginManager().registerEvent(event, listener, priority, listener.executor, Skript.getInstance());
+			if (!isEventRegistered(handlerList, priority)) {
+				PriorityListener listener = listeners[priority.ordinal()];
+				Bukkit.getPluginManager().registerEvent(event, listener, priority, listener.executor, Skript.getInstance());
+			}
 		}
 	}
 
@@ -302,6 +317,12 @@ public final class SkriptEventHandler {
 	 * @param trigger The Trigger to unregister events for.
 	 */
 	public static void unregisterBukkitEvents(Trigger trigger) {
+		synchronized (registrationLock) {
+			removeBukkitBindings(trigger);
+		}
+	}
+
+	private static void removeBukkitBindings(Trigger trigger) {
 		Iterator<Entry<Class<? extends Event>, Trigger>> entryIterator = triggers.entries().iterator();
 		entryLoop: while (entryIterator.hasNext()) {
 			Entry<Class<? extends Event>, Trigger> entry = entryIterator.next();
@@ -311,18 +332,25 @@ public final class SkriptEventHandler {
 
 			// Remove the trigger from the map
 			entryIterator.remove();
+			invalidateDispatchCache();
 
-			// check if we can unregister the listener
 			EventPriority priority = trigger.getEvent().getEventPriority();
 			for (Trigger eventTrigger : triggers.get(event)) {
 				if (eventTrigger.getEvent().getEventPriority() == priority)
 					continue entryLoop;
 			}
 
-			// We can attempt to unregister this listener
 			HandlerList handlerList = getHandlerList(event);
 			if (handlerList == null)
 				continue;
+			// Different event classes can share the Bukkit listener for this handler list
+			for (var binding : triggers.asMap().entrySet()) {
+				Class<? extends Event> boundEvent = binding.getKey();
+				if (boundEvent == event || getHandlerList(boundEvent) != handlerList) continue;
+				for (Trigger remaining : binding.getValue()) {
+					if (remaining.getEvent().getEventPriority() == priority) continue entryLoop;
+				}
+			}
 			Skript skript = Skript.getInstance();
 			for (RegisteredListener registeredListener : handlerList.getRegisteredListeners()) {
 				Listener listener = registeredListener.getListener();
@@ -376,21 +404,13 @@ public final class SkriptEventHandler {
 	}
 
 	private static Method getHandlerListMethod(Class<? extends Event> eventClass) {
-		Method method;
-
-		synchronized (handlerListMethods) {
-			method = handlerListMethods.get(eventClass);
-			if (method == null) {
-				method = getHandlerListMethod_i(eventClass);
-				if (method != null)
-					method.setAccessible(true);
-				handlerListMethods.put(eventClass, method);
-			}
+		Method method = handlerListMethods.get(eventClass);
+		if (method == null) {
+			method = getHandlerListMethod_i(eventClass);
+			if (method == null) throw new RuntimeException("No getHandlerList method found");
+			method.setAccessible(true);
+			handlerListMethods.put(eventClass, method);
 		}
-
-		if (method == null)
-			throw new RuntimeException("No getHandlerList method found");
-
 		return method;
 	}
 
